@@ -69,21 +69,45 @@ permissions cover this zone. Otherwise create an analytics-read token with scope
 limited to this zone. No DNS-edit permissions are required. Credentials belong in
 `secrets/reporting/cloudflare-token` and `secrets/reporting/smtp-password`, one raw
 value per file. Alternatively point `SOLIDS_REPORT_SECRETS_DIR` at an existing
-directory containing these two names. Only the reporter mounts it, read-only.
+directory containing these two names that is readable by UID/GID 65532. Only the
+reporter mounts it, read-only. Docker does not create the credential files, and
+they are deliberately absent from Git.
 
-Create the directory before the first reporter invocation so Docker does not
-create a root-owned bind-mount directory:
+On silicide, copy the working Turing credentials into Solids' own directory:
 
 ```bash
-mkdir -p secrets/reporting
+cd /srv/solids
+sudo install -d -o "$(id -u)" -g 65532 -m 750 secrets secrets/reporting
+sudo install -o "$(id -u)" -g 65532 -m 640 /srv/turing/secrets/reporting/cloudflare-token secrets/reporting/cloudflare-token
+sudo install -o "$(id -u)" -g 65532 -m 640 /srv/turing/secrets/reporting/smtp-password secrets/reporting/smtp-password
 ```
 
-Prepare permissions on the server after creating the files:
+These commands create the files with Solids' permissions while retaining the
+source credentials' Turing permissions. If Turing uses a custom secret directory,
+substitute that source path. Keep the SMTP account and Cloudflare zone settings
+in `.env` consistent with the copied credentials.
+
+For new credentials, create the directory above and enter the values privately
+in Bash. The prompts hide input and keep values out of shell history:
 
 ```bash
-sudo chgrp -R 65532 secrets
-chmod 750 secrets secrets/reporting
+umask 077
+read -r -s -p 'Cloudflare analytics token: ' solids_cf_token
+printf '\n'
+printf '%s' "$solids_cf_token" > secrets/reporting/cloudflare-token
+unset solids_cf_token
+read -r -s -p 'SMTP app password: ' solids_smtp_password
+printf '\n'
+printf '%s' "$solids_smtp_password" > secrets/reporting/smtp-password
+unset solids_smtp_password
+sudo chgrp 65532 secrets/reporting/cloudflare-token secrets/reporting/smtp-password
 chmod 640 secrets/reporting/cloudflare-token secrets/reporting/smtp-password
+```
+
+Verify existence and permissions without displaying the credentials:
+
+```bash
+ls -l secrets/reporting/cloudflare-token secrets/reporting/smtp-password
 ```
 
 The secret directory, `.env`, local `.usage` and SQLite files are excluded from
