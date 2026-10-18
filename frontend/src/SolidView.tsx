@@ -3,28 +3,30 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Design } from './types'
 import { COLORS } from './types'
+import {fittingSites} from './fitting'
+import type {FittingSite} from './fitting'
 
-export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, onEdge }: {
-  design: Design; selected: string | null; selectedFaceId: string | null; resetKey: number
-  onFace: (face: number) => void; onEdge: (edge: number) => void
+export function SolidView({design,selected,selectedFaceId,selectedEdgeId,selectedCategory,fittingSite,focusRequest,showDimensions,resetKey,onFace,onEdge,onFitting}: {
+  design:Design;selected:string|null;selectedFaceId:string|null;selectedEdgeId:string|null;selectedCategory:number|null
+  fittingSite:FittingSite|null;focusRequest:number;showDimensions:boolean;resetKey:number
+  onFace:(face:number)=>void;onEdge:(edge:number)=>void;onFitting:(key:string)=>void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const [failed, setFailed] = useState(false)
-  const [collisionDetail,setCollisionDetail]=useState('')
-  const [focusCorners,setFocusCorners]=useState(0)
-  const lastFocusCorners=useRef(0)
+  const lastFocusRequest=useRef(0)
+  const previousDimensions=useRef(false)
+  const previousDistance=useRef<number|null>(null)
   const cameraPosition = useRef<[number, number, number]>([3.6, 2.7, 4.4])
   const lastResetKey = useRef(resetKey)
   const lastRecipe = useRef('')
-  const callbacks = useRef({ onFace, onEdge })
-  callbacks.current = { onFace, onEdge }
+  const callbacks = useRef({ onFace, onEdge, onFitting })
+  callbacks.current = { onFace, onEdge, onFitting }
   useEffect(() => {
     if (!host.current) return
     let renderer: THREE.WebGLRenderer
     try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }) }
     catch { setFailed(true); return }
     setFailed(false)
-    setCollisionDetail('')
     const element = host.current
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setClearColor(0x000000, 0)
@@ -55,14 +57,18 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
     }
     lastResetKey.current = resetKey
     lastRecipe.current = recipe
-    if (lastFocusCorners.current!==focusCorners) {
-      const regions=design.thickness_check?.collisions.flatMap(c=>c.region_mm) ?? []
-      const target=regions.reduce((sum,p)=>sum.add(new THREE.Vector3(...p as [number,number,number])),new THREE.Vector3())
-      if (target.length()<1e-5 && regions.length) target.set(...regions[0] as [number,number,number])
-      if (target.length()>0) cameraPosition.current=target.normalize().multiplyScalar(6.3).toArray() as [number,number,number]
-      lastFocusCorners.current=focusCorners
+    if (lastFocusRequest.current!==focusRequest && fittingSite) {
+      const target=new THREE.Vector3(...fittingSite.position as [number,number,number])
+      if(target.length()>0)cameraPosition.current=target.normalize().multiplyScalar(6.3).toArray() as [number,number,number]
     }
+    lastFocusRequest.current=focusRequest
     camera.position.set(...cameraPosition.current)
+    const initialSize=element.getBoundingClientRect()
+    camera.aspect=initialSize.width/Math.max(1,initialSize.height)
+    camera.updateProjectionMatrix()
+    if(!showDimensions && previousDimensions.current && previousDistance.current!==null)camera.position.setLength(previousDistance.current)
+    if(showDimensions && !previousDimensions.current)previousDistance.current=camera.position.length()
+    previousDimensions.current=showDimensions
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.enablePan = false
@@ -113,35 +119,44 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       line.userData.edgeIndex = ei
       group.add(line)
       pickEdges.push(line)
-    })
-    const sites=new Map<string,{position:THREE.Vector3;ids:string[];faces:Set<string>}>()
-    for (const collision of collisions) {
-      let position:THREE.Vector3
-      if (collision.shared_vertices.length===1) position=points[collision.shared_vertices[0]].clone()
-      else {
-        const center=new THREE.Vector3()
-        collision.region_mm.forEach(p=>center.add(new THREE.Vector3(...p as [number,number,number])))
-        center.multiplyScalar(scale/collision.region_mm.length)
-        if (collision.shared_vertices.length===2) {
-          position=new THREE.Line3(points[collision.shared_vertices[0]],points[collision.shared_vertices[1]]).closestPointToPoint(center,true,new THREE.Vector3())
-        } else {
-          const face=design.faces[collision.faces[0]]
-          position=new THREE.Plane().setFromCoplanarPoints(points[face[0]],points[face[1]],points[face[2]]).projectPoint(center,new THREE.Vector3())
-        }
+      if (edge.id===selectedEdgeId || edge.category===selectedCategory) {
+        const curve=new THREE.LineCurve3(points[edge.vertices[0]],points[edge.vertices[1]])
+        const highlight=new THREE.Mesh(new THREE.TubeGeometry(curve,1,.009,6,false),new THREE.MeshBasicMaterial({color:'#304c35'}))
+        group.add(highlight)
       }
-      const key=position.toArray().map(v=>v.toFixed(5)).join(',')
-      let site=sites.get(key)
-      if (!site) {site={position,ids:[],faces:new Set()};sites.set(key,site)}
-      site.ids.push(collision.id)
-      collision.face_ids.forEach(id=>site.faces.add(id))
-    }
-    for (const site of sites.values()) {
-      const marker=new THREE.Mesh(new THREE.SphereGeometry(.024,12,8),new THREE.MeshBasicMaterial({color:'#a94444'}))
-      marker.position.copy(site.position)
-      marker.userData.collisionDetail=`${site.ids.join(' / ')} · ${[...site.faces].join(' ↔ ')}. After beveling, manually shape this corner to fit.`
+    })
+    const sites=fittingSites(design)
+    for (const site of sites) {
+      const marker=new THREE.Mesh(new THREE.SphereGeometry(site.key===fittingSite?.key ? .033 : .024,12,8),new THREE.MeshBasicMaterial({color:site.key===fittingSite?.key ? '#87322f' : '#a94444'}))
+      marker.position.set(...site.position.map(v=>v*scale) as [number,number,number])
+      marker.userData.siteKey=site.key
+      marker.userData.collisionDetail=`${site.collisionIds.join(' / ')} · ${site.faceIds.join(' ↔ ')}. After beveling, manually shape this corner to fit.`
       group.add(marker);pickCollisions.push(marker)
     }
-    if (collisions.length) renderer.domElement.setAttribute('aria-label',`Rotatable 3D solid. ${collisionFaces.size} pale red faces need manual corner fitting; ${sites.size} marked overlap locations. Click a red dot for panel references. Drag to orbit, scroll to zoom.`)
+    if(collisions.length)renderer.domElement.setAttribute('aria-label',`Rotatable 3D solid. ${collisionFaces.size} pale red faces need manual corner fitting; ${sites.length} marked overlap locations. Click a red dot for panel references. Drag to orbit, scroll to zoom.`)
+    const dimensionLabels:{element:HTMLSpanElement;point:THREE.Vector3}[]=[]
+    let dimensionRadius=0
+    const fitDimensions=()=>{
+      if(!dimensionRadius)return
+      const halfFov=Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov/2))*Math.min(1,camera.aspect))
+      const distance=dimensionRadius/Math.sin(halfFov)*1.12
+      controls.maxDistance=Math.max(10,distance*1.1)
+      if(camera.position.length()<distance)camera.position.setLength(distance)
+    }
+    if(showDimensions) {
+      const box=new THREE.Box3().setFromPoints(points)
+      group.add(new THREE.Box3Helper(box,0x879178))
+      const mid=box.getCenter(new THREE.Vector3()),lo=box.min,hi=box.max
+      dimensionRadius=Math.hypot(Math.max(Math.abs(lo.x),Math.abs(hi.x)),Math.max(Math.abs(lo.y),Math.abs(hi.y)),Math.max(Math.abs(lo.z),Math.abs(hi.z)))
+      fitDimensions()
+      const labels=[['W',0,new THREE.Vector3(mid.x,lo.y-.1,hi.z)],['D',1,new THREE.Vector3(hi.x+.1,lo.y,mid.z)],['H',2,new THREE.Vector3(hi.x+.1,mid.y,hi.z)]] as const
+      for(const [label,index,point] of labels) {
+        const element=document.createElement('span');element.className='dimension-label'
+        element.textContent=`${label} ${design.dimensions.fired_mm[index].toFixed(1)} mm`
+        element.setAttribute('aria-hidden','true');host.current.appendChild(element)
+        dimensionLabels.push({element,point})
+      }
+    }
     const raycaster = new THREE.Raycaster()
     raycaster.params.Line = { threshold: 0.025 }
     let startX = 0, startY = 0
@@ -153,7 +168,7 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       const face = raycaster.intersectObjects(pickFaces)[0]
       const edge = raycaster.intersectObjects(pickEdges)[0]
       const collision=raycaster.intersectObjects(pickCollisions)[0]
-      if (collision && (!face || collision.distance<face.distance+.025)) setCollisionDetail(collision.object.userData.collisionDetail)
+      if (collision && (!face || collision.distance<face.distance+.025)) callbacks.current.onFitting(collision.object.userData.siteKey)
       else if (edge && (!face || edge.distance < face.distance + 0.05)) callbacks.current.onEdge(edge.object.userData.edgeIndex)
       else if (face) callbacks.current.onFace(face.object.userData.faceIndex)
     }
@@ -182,10 +197,27 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       renderer.setSize(width, height)
       camera.aspect = width / height
       camera.updateProjectionMatrix()
+      fitDimensions()
     })
     resize.observe(element)
     let frame = 0
-    const animate = () => { frame = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera) }
+    const animate = () => {
+      frame=requestAnimationFrame(animate);controls.update();renderer.render(scene,camera)
+      const occupied:{x:number;y:number;w:number;h:number}[]=[]
+      for(const {element:label,point} of dimensionLabels) {
+        const p=point.clone().project(camera)
+        const w=label.offsetWidth,h=label.offsetHeight
+        let x=0,y=0
+        for(const offset of [0,-h-5,h+5,-2*(h+5),2*(h+5)]) {
+          x=Math.max(w/2+4,Math.min(element.clientWidth-w/2-4,(p.x+1)*element.clientWidth/2))
+          y=Math.max(h/2+4,Math.min(element.clientHeight-h/2-4,(1-p.y)*element.clientHeight/2+offset))
+          if(!occupied.some(r=>Math.abs(x-r.x)<(w+r.w)/2+3 && Math.abs(y-r.y)<(h+r.h)/2+3))break
+        }
+        occupied.push({x,y,w,h})
+        label.style.transform=`translate(${x}px,${y}px) translate(-50%,-50%)`
+        label.style.visibility=p.z>=-1 && p.z<=1 ? 'visible' : 'hidden'
+      }
+    }
     animate()
     return () => {
       cameraPosition.current = camera.position.toArray() as [number, number, number]
@@ -202,9 +234,10 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
           else object.material.dispose()
         }
       })
+      dimensionLabels.forEach(({element})=>element.remove())
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [design, selected, selectedFaceId, resetKey, focusCorners])
-  return <div ref={host} className="solid-canvas">{failed && <div className="webgl-message">3D needs WebGL in this browser. Your panel previews and exports are still available.</div>}{!!design.thickness_check?.collisions.length && !failed && <button type="button" className="focus-corners" onClick={()=>setFocusCorners(n=>n+1)}>View fitting areas</button>}{collisionDetail && <div className="collision-callout" role="status"><span>{collisionDetail}</span><button type="button" aria-label="Close overlap details" onClick={()=>setCollisionDetail('')}>×</button></div>}</div>
+  },[design,selected,selectedFaceId,selectedEdgeId,selectedCategory,fittingSite,focusRequest,showDimensions,resetKey])
+  return <div ref={host} className="solid-canvas">{failed && <div className="webgl-message">3D needs WebGL in this browser. Your panel previews and exports are still available.</div>}</div>
 }

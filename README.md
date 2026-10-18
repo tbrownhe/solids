@@ -26,6 +26,19 @@ One non-root, read-only container serves the React build and FastAPI on a single
 origin. Exports are generated in memory; no volumes or secrets are needed.
 Dependencies are locked in `uv.lock` and `frontend/package-lock.json`.
 
+The designer keeps shape and clay settings beside the model, with assembled fired
+dimensions above it and PDF export at the bottom. Construction choices depend on
+the selected solid; changing solids resets the construction while preserving
+size, clay and paper settings. Individual edits display **Custom faces**.
+Select a face or edge for the contextual inspector, or use its **Joint settings**
+and **Fitting** tabs. Joint rows highlight matching edges; fitting review steps
+through marked corners. Collapse the inspector to give the model more room;
+selecting a face, edge or fitting corner restores the details. **Dimensions**
+toggles fired-size labels on the model.
+Paper size, precision and test coupons are under **Print settings**. On phones
+and tablets, the model comes first and **Controls** opens a sheet; Escape closes
+either settings dialog. Project save/load stays in the workspace header.
+
 ## Develop without Docker
 
 Requires Python 3.11+ with [uv](https://docs.astral.sh/uv/) and Node 22.12+.
@@ -282,6 +295,10 @@ versioned and legacy project loading, coupons and fabrication rejection.
 Run it with `npm run test:seo` to check raw response metadata, no-JavaScript
 content, the standalone guide, social PNG dimensions, JSON-LD, sitemap, robots,
 canonical routing, keyboard anchor focus, saved preferences and hydration.
+
+Run it with `npm run test:workspace` for laptop viewport bounds, dependent
+construction choices, preserved settings, contextual editing, dimension labels,
+keyboard tabs, fitting navigation, modal focus and responsive control sheets.
 
 The browser package is pinned to 1.64.1; update the image tag with it. On a host
 with Chromium system dependencies, `npx playwright install chromium` then

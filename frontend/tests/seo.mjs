@@ -89,7 +89,7 @@ try {
   interactive.on('pageerror',error=>errors.push(error.message))
   interactive.on('console',message=>{if(message.type()==='error') errors.push(message.text())})
   await interactive.goto('/')
-  await expect(interactive.getByRole('button',{name:'Download templates',exact:true})).toBeEnabled()
+  await expect(interactive.getByRole('button',{name:'Download PDF',exact:true})).toBeEnabled()
   await expect(interactive.locator('.solid-canvas canvas')).toBeVisible()
   await interactive.getByRole('link',{name:'Start designing',exact:true}).click()
   await expect(interactive.locator('#studio')).toBeFocused()
@@ -97,7 +97,7 @@ try {
   await expect(interactive.locator('.working-edge strong')).toContainText('133.33')
   await interactive.reload()
   await expect(interactive.locator('#shrinkage')).toHaveValue('10')
-  await expect(interactive.getByRole('button',{name:'Download templates',exact:true})).toBeEnabled()
+  await expect(interactive.getByRole('button',{name:'Download PDF',exact:true})).toBeEnabled()
   // A direct guide visit retains correct static metadata and avoids the 3D bundle.
   const requests=[]
   interactive.on('request',request=>requests.push(request.url()))
