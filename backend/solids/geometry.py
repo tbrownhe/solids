@@ -110,7 +110,7 @@ def collision_annotations(mesh, templates, collisions):
             polygon=projected[hull.vertices]
             # A reusable type can represent copies with different neighbors.
             # Keep every case, but merge congruent marked regions for drawing.
-            key=tuple(sorted(tuple(p) for p in np.round(polygon,5)))
+            key=tuple(sorted(set(map(tuple,np.round(polygon,5)))))
             region=next((r for r in template["collision_regions"] if r["key"]==key),None)
             if region is None:
                 region={"key":key,"polygon_mm":polygon.tolist(),"collision_ids":[],"instance_ids":[]}
@@ -128,6 +128,75 @@ def collision_annotations(mesh, templates, collisions):
     for template in templates:
         template["collision_vertices"].sort()
         for region in template["collision_regions"]:region.pop("key")
+
+
+def label_templates(templates):
+    for i,template in enumerate(templates):
+        number=i+1
+        label=""
+        while number:
+            number,remainder=divmod(number-1,26)
+            label=chr(65+remainder)+label
+        template["id"]=label
+        for instance in template["instances"]:
+            instance["template_id"]=label
+
+
+def group_collision_templates(mesh, templates, collisions):
+    """Copies may share a pattern only when their printed fit warnings match.
+
+    A geometrically symmetric panel can be rotated to align its warnings, but
+    never reflected. Keep instance vertices and edge IDs in that same rotation
+    so the assembly and overlap references continue to identify the right spot.
+    """
+    collision_annotations(mesh,templates,collisions)
+    if not collisions:
+        return templates
+    result=[]
+    for template in templates:
+        reference=np.array(template["reference_polygon_mm"])
+        n=len(reference)
+        axis=_unit(reference[1]-reference[0])
+        basis=np.column_stack((axis,[-axis[1],axis[0]]))
+        rotations=[]
+        for k in range(n):
+            order=list(range(k,n))+list(range(k))
+            if any(any(abs(template["edges"][i][field]-template["edges"][j][field])>1e-7
+                       for field in ("length_mm","dihedral_deg")) or
+                   any(template["edges"][i][field]!=template["edges"][j][field]
+                       for field in ("adjacent_sides","cut_side","edge_kind"))
+                   for i,j in enumerate(order)):
+                continue
+            source=_unit(reference[(k+1)%n]-reference[k])
+            rotation=basis @ np.column_stack((source,[-source[1],source[0]])).T
+            if np.allclose((reference[order]-reference[k])@rotation.T+reference[0],reference,atol=1e-5,rtol=0):
+                rotations.append((k,rotation))
+        groups={}
+        for instance in template["instances"]:
+            regions=[r for r in template["collision_regions"] if instance["id"] in r["instance_ids"]]
+            corners={int(label[1:])-1 for w in template["collision_warnings"] if w["instance_id"]==instance["id"] for label in w["corner_labels"]}
+            choices=[]
+            for k,rotation in rotations:
+                polygons=[]
+                for region in regions:
+                    points=(np.array(region["polygon_mm"])-reference[k])@rotation.T+reference[0]
+                    polygons.append(tuple(sorted(set(map(tuple,np.round(points,5))))))
+                signature=(tuple(sorted(polygons)),tuple(sorted((i-k)%n for i in corners)))
+                choices.append((signature,k))
+            signature,k=min(choices)
+            if k:
+                instance["vertex_ids"]=instance["vertex_ids"][k:]+instance["vertex_ids"][:k]
+                instance["edges"]=instance["edges"][k:]+instance["edges"][:k]
+                for i,edge in enumerate(instance["edges"]):edge["label"]=f"E{i+1}"
+            groups.setdefault(signature,[]).append(instance)
+        for signature,instances in sorted(groups.items()):
+            result.append({**template,"quantity":len(instances),"instances":instances,
+                           "face_ids":[instance["face_index"] for instance in instances]})
+    label_templates(result)
+    # Rebuild from the actual copies, rather than copying combined annotations
+    # or stale template IDs from the original geometric groups.
+    collision_annotations(mesh,result,collisions)
+    return result
 
 
 def make_design(parameters: Parameters) -> dict:
@@ -230,18 +299,10 @@ def make_design(parameters: Parameters) -> dict:
                        "inset_polygon_mm": interior, "face_ids": [fi],
                        "warnings": [] if interior else ["Bevels consume the interior face. Reduce slab thickness or increase edge length."]}
     templates = sorted(groups.values(), key=lambda t: (t["sides"], tuple(round(e["angle_deg"], 8) for e in t["edges"])))
-    for i, template in enumerate(templates):
-        number=i+1
-        label=""
-        while number:
-            number,remainder=divmod(number-1,26)
-            label=chr(65+remainder)+label
-        template["id"] = label
-        for instance in template["instances"]:
-            instance["template_id"] = template["id"]
+    label_templates(templates)
     if sum(t["quantity"] for t in templates) != len(mesh["faces"]):
         raise ValueError("Panel multiplicities do not match the source mesh.")
-    warnings = [f"Template {t['id']}: {w}" for t in templates for w in t["warnings"]]
+    warnings = []
     if cut_edge < 25:
         warnings.append("Small panels may not have room for legible printed bevel labels.")
     if mesh["source"].get("chirality"):
@@ -256,10 +317,11 @@ def make_design(parameters: Parameters) -> dict:
             warnings.append(fabrication_error)
         if thickness_check and thickness_check["collisions"]:
             count=len(thickness_check["collisions"])
-            warnings.append(f"{count} thick-panel overlaps need a closer look. Templates can be printed with marked areas and panel references for manual relief.")
+            warnings.append(f"{count} thick-panel overlaps need manual fitting after beveling. These warnings do not mean assembly is impossible; shape the marked corners to fit. Templates include marked areas and panel references.")
         warnings.append("Construction note: a small scrap joint can help you judge the fit before making the full set.")
     collisions=thickness_check["collisions"] if thickness_check else []
-    collision_annotations(mesh,templates,collisions)
+    templates=group_collision_templates(mesh,templates,collisions)
+    warnings[:0]=[f"Template {t['id']}: {w}" for t in templates for w in t["warnings"]]
     working=np.ptp(vertices,axis=0)[[0,2,1]]
     fired=working*(1-parameters.shrinkage_percent/100)
     name = construction["preset"]["name"] if phase2 and construction["preset"] else mesh["source"]["name"] + (" · modified faces" if phase2 else "")

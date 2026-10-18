@@ -22,7 +22,7 @@ export type CollisionWarning = { collision_id: string; instance_id: string; othe
 export type Template = { id: string; quantity: number; sides: number; polygon_mm: number[][]; reference_polygon_mm: number[][]; edges: PanelEdge[]; inset_polygon_mm: number[][]; face_ids: number[]; annotations: Annotation[]; center_annotations: (Annotation & {bold: boolean})[]; warnings: string[]; phase2: boolean; collision_regions: CollisionRegion[]; collision_warnings: CollisionWarning[]; collision_annotations: {text:string;center:number[];point:number[];font:number}[] }
 export type Design = {
   parameters: Parameters; name: string; cut_edge_mm: number; total_faces: number; total_edges: number
-  phase2: boolean; geometry_version: number; base_faces: BaseFace[]; face_records: FaceRecord[]; thickness_check: {status: string; panel_count: number; collisions: {id:string;face_ids:string[];region_mm:number[][]}[]} | null
+  phase2: boolean; geometry_version: number; base_faces: BaseFace[]; face_records: FaceRecord[]; thickness_check: {status: string; panel_count: number; collisions: {id:string;faces:number[];face_ids:string[];shared_vertices:number[];region_mm:number[][]}[]} | null
   dimensions: {axes:string[];working_mm:number[];fired_mm:number[];reference:string}
   vertices: number[][]; faces: number[][]; edges: Edge[]; templates: Template[]; warnings: string[]; export_error: string | null
   edge_types: { id: number; angle_deg: number; dihedral_deg: number; adjacent_sides: number[]; edge_kind: string; cut_side: 'interior' | 'exterior' }[]

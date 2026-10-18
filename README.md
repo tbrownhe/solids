@@ -159,13 +159,22 @@ this fabrication check: high-valence corners in cuboctahedron and
 rhombicuboctahedron can require additional corner relief, even where the base
 surface is untouched. Such edits remain printable: templates hatch the projected
 overlap regions and label shared corners V1, V2, etc. The PDF includes the affected
-panel instances and corner references. A reusable template combines warnings for
-all its copies; consult the instance reference before relieving a particular
-panel. Hatching is a fit warning, not a cut line. Automatic corner-relief design
+panel instances and corner references. Reusable templates group copies with
+matching geometry and overlap marks: unaffected copies stay unmarked, and
+different corner warnings receive separate patterns and MAKE quantities. Only
+rotations can align matching marks; mirrored corners stay separate. Consult the
+instance reference before relieving a panel. Hatching is a fit warning, not a
+cut line. Automatic corner-relief design
 is not implemented. Invalid surfaces, collapsed panels and unreadable templates
 still block export. Original Phase 1 convex
 exports retain their prior behavior; their preservation does not certify these
 multi-face corners physically.
+
+The 3D preview shades affected faces pale red and places red markers at shared
+corners (or the projected overlap location for non-corner contacts). Click a dot
+for collision/panel IDs, or use **View fitting areas** to face the marked region.
+These warnings do not rule out assembly: after beveling, manually shape the
+marked corners to fit, then dry-fit the panels.
 
 The studio shows assembled width, depth and height from the exterior reference
 mesh in fixed model axes, including edited face apices. Fired dimensions use the

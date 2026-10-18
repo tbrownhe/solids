@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, readFile } from 'node:fs/promises'
 import { chromium, expect } from '@playwright/test'
+import * as THREE from 'three'
 
 const baseURL=process.env.STUDIO_URL ?? 'http://127.0.0.1:8081'
 const artifacts=new URL('../../artifacts/browser/',import.meta.url).pathname
@@ -103,6 +104,49 @@ try {
   await (await next).saveAs(`${artifacts}corner-relief.pdf`)
   assert.equal((await readFile(`${artifacts}corner-relief.pdf`)).subarray(0,4).toString(),'%PDF')
   await page.screenshot({path:`${artifacts}corner-relief-desktop.png`,fullPage:true})
+  const flattened={...legacy,solid_id:'dodecahedron',preset_id:'stellated-dodecahedron',apex_offset_mm:20,face_transforms:{F001:{mode:'flat',offset_mm:0}}}
+  await page.locator('input[type=file]').setInputFiles({name:'flat-dodecahedron.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(flattened))})
+  await expect(page.locator('.settings > .field-hint').first()).toContainText('56 faces')
+  await expect(download).toBeEnabled()
+  await expect(page.locator('.template-card')).toHaveCount(5)
+  const clearCard=page.locator('.template-card').filter({has:page.locator('.quantity',{hasText:'MAKE 40'})})
+  await expect(clearCard).toHaveCount(1)
+  await expect(clearCard.locator('.panel-collision-note')).toHaveCount(0)
+  await expect(clearCard.locator('svg pattern')).toHaveCount(0)
+  await expect(page.locator('.panel-collision-note')).toHaveCount(3)
+  await expect(page.locator('.panel-collision-note').first()).toContainText('all 5 copies need corner shaping after beveling')
+  await expect(page.locator('.collision-legend')).toContainText('do not mean assembly is impossible')
+  await expect(canvas).toHaveAttribute('aria-label',/11 pale red faces.*5 marked overlap locations/)
+  await page.getByRole('button',{name:'View fitting areas',exact:true}).click()
+  await expect(canvas).toBeVisible()
+  const result=await page.request.post('/api/design',{data:flattened})
+  assert.equal(result.status(),200)
+  const design=await result.json()
+  // Project the real shared corners into the focused camera, then click a
+  // visible marker to check its actual hit target and panel reference callout.
+  const regions=design.thickness_check.collisions.flatMap(c=>c.region_mm)
+  const cameraPosition=regions.reduce((sum,p)=>sum.add(new THREE.Vector3(...p)),new THREE.Vector3()).normalize().multiplyScalar(6.3)
+  const bounds=await canvas.boundingBox()
+  const camera=new THREE.PerspectiveCamera(32,bounds.width/bounds.height,.01,100)
+  camera.position.copy(cameraPosition);camera.lookAt(0,0,0);camera.updateMatrixWorld()
+  const scale=1.35/Math.max(...design.vertices.map(p=>new THREE.Vector3(...p).length()))
+  const ids=[...new Set(design.thickness_check.collisions.flatMap(c=>c.shared_vertices))]
+  for (const id of ids) {
+    const p=new THREE.Vector3(...design.vertices[id]).multiplyScalar(scale).project(camera)
+    const x=bounds.x+(p.x+1)*bounds.width/2,y=bounds.y+(1-p.y)*bounds.height/2
+    await page.mouse.move(x,y)
+    if ((await canvas.getAttribute('title')??'').includes('After beveling')) {await page.mouse.click(x,y);break}
+  }
+  await expect(page.locator('.collision-callout')).toContainText('After beveling, manually shape this corner to fit.')
+  await expect(page.locator('.collision-callout')).toContainText('F001')
+  await page.locator('.preview').screenshot({path:`${artifacts}dodecahedron-fitting-areas.png`})
+  await page.getByRole('button',{name:'Close overlap details'}).click()
+  next=page.waitForEvent('download');await clearCard.getByRole('button',{name:/as SVG/}).click()
+  const clearSVG=await next;await clearSVG.saveAs(`${artifacts}dodecahedron-clear-40.svg`)
+  const clearText=await readFile(`${artifacts}dodecahedron-clear-40.svg`,'utf8')
+  assert.match(clearText,/MAKE 40/);assert.doesNotMatch(clearText,/OVERLAP WARNING/)
+  next=page.waitForEvent('download');await download.click()
+  await (await next).saveAs(`${artifacts}dodecahedron-split.pdf`)
   await page.getByRole('button',{name:'Reset to studio defaults'}).click()
   await expect(download).toBeEnabled()
   assert.deepEqual(errors,[])
@@ -114,6 +158,12 @@ try {
   await expect(p.getByRole('button',{name:'Download templates',exact:true})).toBeEnabled()
   assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true)
   await p.screenshot({path:`${artifacts}phase2-mobile.png`,fullPage:true})
+  await p.locator('input[type=file]').setInputFiles({name:'flat-dodecahedron.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(flattened))})
+  await expect(p.locator('.solid-canvas canvas')).toHaveAttribute('aria-label',/11 pale red faces.*5 marked overlap locations/)
+  await p.getByRole('button',{name:'View fitting areas',exact:true}).click()
+  await expect(p.locator('.collision-legend')).toContainText('After beveling, manually shape')
+  assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true)
+  await p.locator('.preview').screenshot({path:`${artifacts}dodecahedron-fitting-mobile.png`})
   await mobile.close()
-  console.log('Phase 2 browser QA passed: presets, 3D face selection, individual/equivalent transforms, front/back, assembled dimensions, legacy and v2 save/load, persistence, PDF, SVG, coupons, printable overlap warnings, rejection of invalid geometry, mobile.')
+  console.log('Phase 2 browser QA passed: presets, face edits, assembled dimensions, project files, PDF/SVG, clear/marked template quantities, pale red faces, clickable corner markers, fitting guidance, invalid geometry, mobile.')
 } finally {await browser.close()}

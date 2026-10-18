@@ -88,6 +88,53 @@ def test_selective_rhombicuboctahedron_preserves_untouched_faces_and_ids():
     assert pdf_bytes(d).startswith(b"%PDF")
 
 
+@pytest.mark.parametrize('solid,expected_collisions',[('cube',8),('octahedron',12),('dodecahedron',10)])
+def test_stellated_flattened_face_separates_clear_and_marked_copies(solid,expected_collisions):
+    parameters={'solid_id':solid,'preset_id':f'stellated-{solid}','apex_offset_mm':20}
+    symmetric=make_design(Parameters(**parameters))
+    assert symmetric['thickness_check']['status']=='passed'
+    assert len(symmetric['templates'])==1
+    d=make_design(Parameters(**parameters,face_transforms={'F001':{'mode':'flat'}}))
+    assert len(d['thickness_check']['collisions'])==expected_collisions
+    assert sum(t['quantity'] for t in d['templates'])==d['total_faces']
+    copies={}
+    for t in d['templates']:
+        assert len(t['instances'])==len(t['face_ids'])==t['quantity']
+        affected={w['instance_id'] for w in t['collision_warnings']}
+        assert affected==({i['id'] for i in t['instances']} if t['collision_regions'] else set())
+        for instance in t['instances']:
+            assert instance['id'] not in copies
+            copies[instance['id']]=t['id']
+            assert instance['template_id']==t['id']
+            assert all(instance['id'] in r['instance_ids'] for r in t['collision_regions'])
+    # Every assembly edge still maps to the correct physical segment after
+    # rotations used to align a symmetric pattern's collision marks.
+    joints={e['id']:e for e in d['edges']}
+    vertices=np.array(d['vertices'])
+    for t in d['templates']:
+        for instance in t['instances']:
+            ids=instance['vertex_ids']
+            for i,edge in enumerate(instance['edges']):
+                joint=joints[edge['joint_id']]
+                assert set(joint['vertices'])=={ids[i],ids[(i+1)%len(ids)]}
+                assert t['edges'][i]['angle_deg']==pytest.approx(joint['angle_deg'])
+                assert t['edges'][i]['length_mm']==pytest.approx(np.linalg.norm(vertices[ids[i]]-vertices[ids[(i+1)%len(ids)]]))
+    for collision in d['thickness_check']['collisions']:
+        for panel in collision['panels']:
+            assert panel['template_id']==copies[panel['instance_id']]
+    if solid=='dodecahedron':
+        assert [(t['quantity'],bool(t['collision_regions'])) for t in d['templates']]==[(5,False),(40,False),(5,True),(5,True),(1,True)]
+        # The two base-corner cases are mirrored, not interchangeable rotations.
+        assert d['templates'][2]['collision_vertices']!=d['templates'][3]['collision_vertices']
+        doc=pymupdf.open(stream=pdf_bytes(d),filetype='pdf')
+        for page,sheet in zip(list(doc)[1:],page_plan(d)['template_pages']):
+            t=next(t for t in d['templates'] if t['id']==sheet['template_id'])
+            text=page.get_text()
+            assert f"MAKE {t['quantity']}" in text
+            assert ('OVERLAP WARNING' in text)==bool(t['collision_regions'])
+            assert (b'OVERLAP WARNING' in svg_bytes(d,t['id']))==bool(t['collision_regions'])
+
+
 def test_assembled_bounds_follow_shrinkage_and_face_edits():
     for shrinkage in (0,20):
         d=make_design(Parameters(solid_id="cube",shrinkage_percent=shrinkage))

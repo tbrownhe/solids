@@ -77,3 +77,16 @@ def test_phase2_invalid_offsets_block_export_but_overlaps_are_printable():
     marked=next(t for t in design['templates'] if t['collision_regions'])
     svg=client.post('/api/export/svg/'+marked['id'],json=overlap)
     assert svg.status_code==200 and b'hatch' in svg.content and b'OVERLAP' in svg.content
+
+
+def test_flattened_stellated_dodecahedron_keeps_40_clear_triangles_unmarked():
+    parameters={'solid_id':'dodecahedron','preset_id':'stellated-dodecahedron','apex_offset_mm':20,'face_transforms':{'F001':{'mode':'flat','offset_mm':0}}}
+    response=client.post('/api/design',json=parameters)
+    assert response.status_code==200
+    d=response.json()
+    assert d['export_error'] is None
+    clear=next(t for t in d['templates'] if t['quantity']==40)
+    assert not clear['collision_regions'] and not clear['collision_annotations'] and not clear['collision_warnings']
+    marked=[t for t in d['templates'] if t['sides']==3 and t['collision_regions']]
+    assert [t['quantity'] for t in marked]==[5,5]
+    assert client.post('/api/export/pdf',json=parameters).status_code==200

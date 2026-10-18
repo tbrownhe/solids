@@ -10,6 +10,9 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
 }) {
   const host = useRef<HTMLDivElement>(null)
   const [failed, setFailed] = useState(false)
+  const [collisionDetail,setCollisionDetail]=useState('')
+  const [focusCorners,setFocusCorners]=useState(0)
+  const lastFocusCorners=useRef(0)
   const cameraPosition = useRef<[number, number, number]>([3.6, 2.7, 4.4])
   const lastResetKey = useRef(resetKey)
   const lastRecipe = useRef('')
@@ -21,6 +24,7 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
     try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }) }
     catch { setFailed(true); return }
     setFailed(false)
+    setCollisionDetail('')
     const element = host.current
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setClearColor(0x000000, 0)
@@ -51,6 +55,13 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
     }
     lastResetKey.current = resetKey
     lastRecipe.current = recipe
+    if (lastFocusCorners.current!==focusCorners) {
+      const regions=design.thickness_check?.collisions.flatMap(c=>c.region_mm) ?? []
+      const target=regions.reduce((sum,p)=>sum.add(new THREE.Vector3(...p as [number,number,number])),new THREE.Vector3())
+      if (target.length()<1e-5 && regions.length) target.set(...regions[0] as [number,number,number])
+      if (target.length()>0) cameraPosition.current=target.normalize().multiplyScalar(6.3).toArray() as [number,number,number]
+      lastFocusCorners.current=focusCorners
+    }
     camera.position.set(...cameraPosition.current)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
@@ -74,6 +85,9 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
     scene.add(group)
     const pickFaces: THREE.Mesh[] = []
     const pickEdges: THREE.Line[] = []
+    const pickCollisions: THREE.Mesh[] = []
+    const collisions=design.thickness_check?.collisions ?? []
+    const collisionFaces=new Set(collisions.flatMap(c=>c.faces))
     const faceColors: Record<number, string> = { 3: '#be825f', 4: '#c9c9b4', 5: '#bfbd91', 6: '#aabcae', 8: '#b5c2c2', 10: '#c3b4a3' }
     const selectedFaces = new Set(selectedFaceId ? design.face_records.flatMap((r,i) => r.source_face_id===selectedFaceId ? [i] : []) : design.templates.find(t => t.id === selected)?.face_ids ?? [])
     design.faces.forEach((face, fi) => {
@@ -84,7 +98,7 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       const geometry = new THREE.BufferGeometry()
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
       geometry.computeVertexNormals()
-      const material = new THREE.MeshStandardMaterial({ color: selectedFaces.has(fi) ? '#cc9a67' : faceColors[face.length] ?? '#c6b8a4',
+      const material = new THREE.MeshStandardMaterial({ color: collisionFaces.has(fi) ? (selectedFaces.has(fi) ? '#cd8c8c' : '#e4aaaa') : selectedFaces.has(fi) ? '#cc9a67' : faceColors[face.length] ?? '#c6b8a4',
         roughness: 0.93, metalness: 0, flatShading: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
       const mesh = new THREE.Mesh(geometry, material)
       mesh.userData.faceIndex = fi
@@ -100,6 +114,34 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       group.add(line)
       pickEdges.push(line)
     })
+    const sites=new Map<string,{position:THREE.Vector3;ids:string[];faces:Set<string>}>()
+    for (const collision of collisions) {
+      let position:THREE.Vector3
+      if (collision.shared_vertices.length===1) position=points[collision.shared_vertices[0]].clone()
+      else {
+        const center=new THREE.Vector3()
+        collision.region_mm.forEach(p=>center.add(new THREE.Vector3(...p as [number,number,number])))
+        center.multiplyScalar(scale/collision.region_mm.length)
+        if (collision.shared_vertices.length===2) {
+          position=new THREE.Line3(points[collision.shared_vertices[0]],points[collision.shared_vertices[1]]).closestPointToPoint(center,true,new THREE.Vector3())
+        } else {
+          const face=design.faces[collision.faces[0]]
+          position=new THREE.Plane().setFromCoplanarPoints(points[face[0]],points[face[1]],points[face[2]]).projectPoint(center,new THREE.Vector3())
+        }
+      }
+      const key=position.toArray().map(v=>v.toFixed(5)).join(',')
+      let site=sites.get(key)
+      if (!site) {site={position,ids:[],faces:new Set()};sites.set(key,site)}
+      site.ids.push(collision.id)
+      collision.face_ids.forEach(id=>site.faces.add(id))
+    }
+    for (const site of sites.values()) {
+      const marker=new THREE.Mesh(new THREE.SphereGeometry(.024,12,8),new THREE.MeshBasicMaterial({color:'#a94444'}))
+      marker.position.copy(site.position)
+      marker.userData.collisionDetail=`${site.ids.join(' / ')} · ${[...site.faces].join(' ↔ ')}. After beveling, manually shape this corner to fit.`
+      group.add(marker);pickCollisions.push(marker)
+    }
+    if (collisions.length) renderer.domElement.setAttribute('aria-label',`Rotatable 3D solid. ${collisionFaces.size} pale red faces need manual corner fitting; ${sites.size} marked overlap locations. Click a red dot for panel references. Drag to orbit, scroll to zoom.`)
     const raycaster = new THREE.Raycaster()
     raycaster.params.Line = { threshold: 0.025 }
     let startX = 0, startY = 0
@@ -110,7 +152,9 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       raycaster.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -(e.clientY - rect.top) / rect.height * 2 + 1), camera)
       const face = raycaster.intersectObjects(pickFaces)[0]
       const edge = raycaster.intersectObjects(pickEdges)[0]
-      if (edge && (!face || edge.distance < face.distance + 0.05)) callbacks.current.onEdge(edge.object.userData.edgeIndex)
+      const collision=raycaster.intersectObjects(pickCollisions)[0]
+      if (collision && (!face || collision.distance<face.distance+.025)) setCollisionDetail(collision.object.userData.collisionDetail)
+      else if (edge && (!face || edge.distance < face.distance + 0.05)) callbacks.current.onEdge(edge.object.userData.edgeIndex)
       else if (face) callbacks.current.onFace(face.object.userData.faceIndex)
     }
     renderer.domElement.addEventListener('pointerdown', down)
@@ -121,10 +165,15 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       raycaster.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera)
       const face=raycaster.intersectObjects(pickFaces)[0]
       const edge=raycaster.intersectObjects(pickEdges)[0]
-      if (edge && (!face || edge.distance < face.distance+.05)) {
+      const collision=raycaster.intersectObjects(pickCollisions)[0]
+      if (collision && (!face || collision.distance<face.distance+.025)) renderer.domElement.title=collision.object.userData.collisionDetail
+      else if (edge && (!face || edge.distance < face.distance+.05)) {
         const data=design.edges[edge.object.userData.edgeIndex]
         renderer.domElement.title=`${data.id}: ${data.angle_deg.toFixed(design.parameters.angle_precision)}° · ${data.cut_side.toUpperCase()} UP · ${data.edge_kind} · ${data.face_ids.join(' ↔ ')}`
-      } else renderer.domElement.title=face ? design.face_records[face.object.userData.faceIndex].id : ''
+      } else if (face) {
+        const fi=face.object.userData.faceIndex
+        renderer.domElement.title=design.face_records[fi].id+(collisionFaces.has(fi) ? ' · Marked corners need manual shaping after beveling.' : '')
+      } else renderer.domElement.title=''
     }
     renderer.domElement.addEventListener('pointermove',hover)
     const resize = new ResizeObserver(() => {
@@ -156,6 +205,6 @@ export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, 
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [design, selected, selectedFaceId, resetKey])
-  return <div ref={host} className="solid-canvas">{failed && <div className="webgl-message">3D needs WebGL in this browser. Your panel previews and exports are still available.</div>}</div>
+  }, [design, selected, selectedFaceId, resetKey, focusCorners])
+  return <div ref={host} className="solid-canvas">{failed && <div className="webgl-message">3D needs WebGL in this browser. Your panel previews and exports are still available.</div>}{!!design.thickness_check?.collisions.length && !failed && <button type="button" className="focus-corners" onClick={()=>setFocusCorners(n=>n+1)}>View fitting areas</button>}{collisionDetail && <div className="collision-callout" role="status"><span>{collisionDetail}</span><button type="button" aria-label="Close overlap details" onClick={()=>setCollisionDetail('')}>×</button></div>}</div>
 }

@@ -400,7 +400,7 @@ def _phase2_cover(c,design,plan):
     _text(c,MARGIN,y,"Use the assembly sheets to match joint IDs and parent face IDs (Fxxx.subface).",8)
     y-=6
     if plan["collision_pages"]:
-        _text(c,MARGIN,y,"OVERLAP NOTES: hatching flags manual-fit areas. See collision references; these are not cut lines.",7,True)
+        _text(c,MARGIN,y,"OVERLAP NOTES: bevel first, then shape marked corners to fit. See overlap references; not cut lines.",7,True)
         y-=6
     if plan["tiled"]:
         _text(c,MARGIN,y,"Tiled blanks: align registration crosses with 10 mm overlap; join the entire outline first.",8)
@@ -443,9 +443,9 @@ def _collision_pages(c,design,plan):
     for pi in range(plan["collision_pages"]):
         page_number=2+len(plan["template_pages"])+plan["assembly_pages"]+pi
         _header(c,design,"OVERLAP / MANUAL RELIEF REFERENCE",page_number,plan["page_count"],w,h)
-        _text(c,MARGIN,h-49,"Hatching combines affected copies on each reusable pattern. Check your instance IDs below.",7)
+        _text(c,MARGIN,h-49,"Marked patterns are separate from clear copies. Check the affected instance IDs below.",7)
         _text(c,MARGIN,h-55,"Vn is the shared reference corner at the start of En, in the interior view. Hatching is not a cut line.",7)
-        _text(c,MARGIN,h-61,"Review or relieve the marked area by hand and dry-fit; no automatic correction is applied.",7)
+        _text(c,MARGIN,h-61,"Overlaps do not rule out assembly: bevel first, then manually shape marked corners to fit and dry-fit.",7)
         _text(c,MARGIN,h-71,"CASE",7,True);_text(c,34,h-71,"PANEL / PATTERN / CORNER",7,True)
         _text(c,113,h-71,"OVERLAPS PANEL / PATTERN / CORNER",7,True)
         y=h-79
@@ -601,7 +601,7 @@ def pdf_bytes(design):
                     _cross(c, gx + x, gy + y)
         c.restoreState()
         if template.get("collision_regions"):
-            _text(c,MARGIN,47,"OVERLAP WARNING / Hatching marks areas for manual relief, not cut lines. V# labels shared corners.",7,True)
+            _text(c,MARGIN,47,"OVERLAP WARNING / Shape marked corners to fit after beveling. Hatching is not a cut line.",7,True)
             _text(c,MARGIN,41,"Affected copies: "+_copy_summary(template)+". See the overlap reference for the full list.",7)
         if design.get("phase2"):
             _text(c,MARGIN,34,"IN = INTERIOR UP / OUT = EXTERIOR UP. Lengths refer to the exterior reference, not the blank.",7)
@@ -645,9 +645,9 @@ def svg_bytes(design, template_id):
         size=" x ".join(f"{value:.1f}" for value in design["dimensions"]["fired_mm"])
         metadata.append(f"Estimated fired model size (W x D x H): {size} mm")
     if template.get("collision_regions"):
-        metadata.extend(["OVERLAP WARNING: hatching marks projected overlap through slab thickness; manual relief may be needed.",
+        metadata.extend(["OVERLAP WARNING: manually shape hatched corners to fit after beveling; overlaps do not rule out assembly.",
                          "Affected copies: "+_copy_summary(template)+". Match each case using the PDF overlap reference.",
-                         "V# marks shared corners. Regions combine affected copies; hatching is not a cut line."])
+                         "V# marks shared corners. Copies share matching overlap marks; hatching is not a cut line."])
     # Keep metadata legible even when the physical panel is very small. Widen
     # the document, preserving one viewBox unit per mm and the cut outline.
     document_width = max(w + 20, max(stringWidth(line, "Helvetica", 2.5 * mm) / mm for line in metadata) + 20)
