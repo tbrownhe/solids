@@ -9,12 +9,15 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen.canvas import Canvas
 from .fabrication import offset_polygon, signed_inset
+from .schematics import project_schematic, view_direction
 
 PAPER = {"letter": (215.9, 279.4), "a4": (210, 297), "a3": (297, 420)}
 MARGIN, TOP, BOTTOM, OVERLAP = 14.0, 49.0, 39.0, 10.0
 INK = HexColor("#25332e")
 GRAY = HexColor("#6b716c")
 BEVELER_URL = "https://www.etsy.com/listing/4466016418/precision-beveler-pottery-bevel-cutter"
+SITE_URL = "https://solids.tobiasbrownheft.xyz"
+SITE_LABEL = "solids.tobiasbrownheft.xyz"
 
 
 def page_plan(design):
@@ -314,7 +317,13 @@ def _header(c, design, title, page, total, width, height):
     _text(c, MARGIN, height - 41,
           f"{p['shrinkage_percent']:g}% cut-to-fired shrinkage  /  {p['page_format'].upper()}  /  PRINT ACTUAL SIZE, 100%", 8)
     _text(c, width - 44, 9, f"SHEET {page:02d} / {total:02d}", 7)
-    _text(c, MARGIN, 9, "Disable Fit to Page. Verify calibration before cutting.", 7)
+    _print_footer(c)
+
+
+def _print_footer(c):
+    _text(c, MARGIN, 9, SITE_LABEL + "  /  Disable Fit to Page. Verify calibration before cutting.", 7)
+    c.linkURL(SITE_URL, (MARGIN * mm, 8 * mm,
+                        MARGIN * mm + stringWidth(SITE_LABEL, "Helvetica", 7), 12 * mm), relative=0)
 
 
 def _outline(c, polygon, ox, oy, dashed=False):
@@ -349,61 +358,195 @@ def _reference_outline(c,template,ox,oy):
     c.drawPath(path,fill=0,stroke=1);c.setDash()
 
 
-def _phase2_cover(c,design,plan):
+def _wrapped(c, x, y, text, width, size=8, bold=False, leading=4.2):
+    font = "Helvetica-Bold" if bold else "Helvetica"
+    line = ""
+    for word in text.split():
+        candidate = f"{line} {word}".strip()
+        if line and stringWidth(candidate, font, size) > width * mm:
+            _text(c, x, y, line, size, bold)
+            y -= leading
+            line = word
+        else:
+            line = candidate
+    if line:
+        _text(c, x, y, line, size, bold)
+        y -= leading
+    return y
+
+
+def _schematic(c, design, direction, x, y, width, height):
+    view = project_schematic(design, direction)
+    low, high = view["bounds"]
+    scale = min((width - 4) / (high[0] - low[0]), (height - 4) / (high[1] - low[1]))
+    origin = np.array([x + width / 2, y + height / 2]) - (low + high) / 2 * scale
+    transform = lambda points: (np.asarray(points) * scale + origin).tolist()
+    patterns = {i: t["id"] for t in design["templates"] for i in t["face_ids"]}
+    collisions = (design.get("thickness_check") or {}).get("collisions", [])
+    affected = {i for collision in collisions for i in collision["faces"]}
+    c.saveState()
+    light = np.array([-.45, .7, 1.])
+    light /= np.linalg.norm(light)
+    for face in view["faces"]:
+        index = face["face_index"]
+        normal = np.array([-face["plane"][0], -face["plane"][1], 1.])
+        normal /= np.linalg.norm(normal)
+        brightness = max(0., normal @ light)
+        # A fixed upper-left light distinguishes inward folds from outward
+        # points even when every triangle uses the same reusable template.
+        if index in affected:
+            c.setFillColorRGB(*(np.array([.98, .88, .86]) * (.94 + .06 * brightness)))
+        else:
+            c.setFillGray(.84 + .15 * brightness)
+        for region in face["regions"]:
+            points = transform(region)
+            path = c.beginPath()
+            path.moveTo(points[0][0] * mm, points[0][1] * mm)
+            for px, py in points[1:]:
+                path.lineTo(px * mm, py * mm)
+            path.close()
+            c.drawPath(path, fill=1, stroke=0)
+    c.setStrokeColor(INK)
+    c.setLineWidth(.55)
+    for segment in view["edges"]:
+        a, b = transform(segment)
+        _line(c, *a, *b, .55)
+    occupied = []
+    # Fit labels wholly inside visible surfaces, never across a crease or a
+    # hidden surface. Dense views omit an ID before sacrificing legibility.
+    for face in view["faces"]:
+        index = face["face_index"]
+        label = patterns[index]
+        panel_id = design["face_records"][index]["id"]
+        regions = sorted((transform(region) for region in face["regions"]),
+                         key=lambda p: abs(sum(a[0]*b[1]-a[1]*b[0] for a,b in zip(p,p[1:]+p[:1]))), reverse=True)
+        placed = False
+        layouts = [[(label, 7, 1.3), (panel_id, 5.5, -1.6)], [(label, 7, 0)]] if design.get("phase2") else [[(label, 7, 0)]]
+        for layout in layouts:
+            for polygon in regions:
+                center = np.mean(polygon, axis=0)
+                positions = [center] + [.75*center + .25*np.array(p) for p in polygon]
+                for position in positions:
+                    boxes = []
+                    for text, font, offset in layout:
+                        hw, hh = stringWidth(text, "Helvetica-Bold", font) / mm / 2, font / mm * .6
+                        cx, cy = position + [0, offset]
+                        boxes.append([[cx-hw,cy-hh],[cx+hw,cy-hh],[cx+hw,cy+hh],[cx-hw,cy+hh]])
+                    if not all(_inside(p, polygon, .65) for box in boxes for p in box):
+                        continue
+                    if any(_overlap(box, old) for box in boxes for old in occupied):
+                        continue
+                    for text, font, offset in layout:
+                        c.setFillColor(INK);c.setFont("Helvetica-Bold",font)
+                        c.drawCentredString(position[0]*mm,(position[1]+offset)*mm-font*.3,text)
+                    occupied.extend(boxes)
+                    placed = True
+                    break
+                if placed:
+                    break
+            if placed:
+                break
+    # Mark only corners actually visible in this view; hidden warnings remain
+    # on the detailed template and overlap reference sheets.
+    corners = {v for collision in collisions for v in collision["shared_vertices"]}
+    for vertex in sorted(corners):
+        point = view["vertices"][vertex]
+        if any(np.linalg.norm(point - endpoint) < 1e-7 for segment in view["edges"] for endpoint in segment):
+            px, py = transform([point])[0]
+            c.setStrokeColor(HexColor("#963f37"));c.setFillColor(HexColor("#963f37"))
+            c.circle(px*mm,py*mm,.7*mm,fill=1,stroke=0)
+    c.restoreState()
+
+
+def _joint_section(c, x, y, width, phase2):
+    """Compact section alongside the exterior assembly views."""
+    _text(c,x,y,"BEVEL SECTION / UPPER WEDGE IS WASTE",7,True)
+    sy = y - 20
+    c.setStrokeColor(INK);c.setFillColor(HexColor("#e6e9e3"))
+    path=c.beginPath()
+    path.moveTo((x+4)*mm,sy*mm);path.lineTo((x+12)*mm,(sy+10)*mm)
+    path.lineTo((x+width-4)*mm,(sy+10)*mm);path.lineTo((x+width-4)*mm,sy*mm);path.close()
+    c.drawPath(path,fill=1,stroke=1)
+    c.setDash(2,2);_line(c,x+4,sy,x+4,sy+10);_line(c,x+4,sy+10,x+12,sy+10);c.setDash()
+    _text(c,x+14,sy+13,"INTERIOR FACE UP" + (" / IN" if phase2 else ""),7,True)
+    _text(c,x+4,sy-4,"EXTERIOR FACE DOWN / keep exterior edge",7)
+    if phase2:
+        _text(c,x,sy-10,"For OUT edges, turn over: EXTERIOR FACE UP.",7)
+    else:
+        _text(c,x,sy-10,"Inset = thickness / tan(tool angle)",7)
+    return sy-16
+
+
+def _reference_cover(c, design, plan):
     w,h=plan["paper_width_mm"],plan["paper_height_mm"]
+    phase2=design.get("phase2")
     _header(c,design,design["name"],1,plan["page_count"],w,h)
-    size=" x ".join(f"{value:.1f}" for value in design["dimensions"]["fired_mm"])
-    _text(c,MARGIN,h-47,f"ESTIMATED FIRED SIZE / W x D x H: {size} mm (exterior reference)",7)
-    y=h-57
-    _text(c,MARGIN,y,"EXPERIMENTAL FABRICATION / DRY-FIT REQUIRED",11,True)
-    y-=9
-    for line in [
-        "Reference surfaces are checked; thick-panel overlap areas are marked when found. Test clay fit.",
-        "Keep thickness on the inward side of the exterior reference surface.",
-        "IN: bevel with INTERIOR FACE UP. OUT: bevel with EXTERIOR FACE UP.",
-        "Mixed panels need cuts from both sides. Preserve edge IDs when turning the clay over.",
-        "The solid outline is the RAW BLANK. Reflex edges extend it beyond the exterior reference.",
-        "Dash-dot = final exterior reference. Dashed = final interior surface. Do not cut these as outlines.",
-        "All edge lengths are WORKING exterior-reference lengths. Shrinkage is applied once.",
-        "Wire angle is from the slab plane: 90 deg is normal, 0 deg is parallel.",
-    ]:
-        _text(c,MARGIN,y,line,8);y-=6
-    y-=4
-    _text(c,MARGIN,y,f"{len(design['templates'])} reusable panel types / {design['total_faces']} pieces / {design['total_edges']} matched joints",10,True)
-    y-=9
-    for t in design["templates"][:(2 if len(design["templates"])>3 else 3)]:
-        sides=" / ".join(sorted({"OUT" if e["cut_side"]=="exterior" else "IN" for e in t["edges"]}))
-        _text(c,MARGIN,y,f"{t['id']} / MAKE {t['quantity']} / {t['sides']} sides / {sides}",8,True)
-        y-=6
-    if len(design["templates"])>3:
-        _text(c,MARGIN,y,"Further panel types and quantities are listed on the template sheets.",8)
-        y-=6
+    size=" x ".join(f"{v:.1f}" for v in design["dimensions"]["fired_mm"])
+    _text(c,MARGIN,h-49,f"ESTIMATED FIRED SIZE / W x D x H: {size} mm (exterior reference)",8,True)
+    gap=10
+    column=(w-2*MARGIN-gap)/2
+    right=MARGIN+column+gap
+    top=h-61
+    bottom=54
+    view_h=(top-bottom-28)/2
+    direction=view_direction(design)
+    _text(c,right,top,"FINISHED FORM / EXTERIOR VIEWS",8,True)
+    _text(c,right,top-7,"VIEW A",7)
+    _schematic(c,design,direction,right,top-11-view_h,column,view_h)
+    _text(c,right,top-18-view_h,"OPPOSITE VIEW / INCLUDING UNDERSIDE",7)
+    _schematic(c,design,-direction,right,top-22-2*view_h,column,view_h)
+    _wrapped(c,right,bottom,"Letters = template IDs. Views not to scale.",column,7,leading=3.5)
+    _wrapped(c,right,bottom-7,"Panel IDs shown where space allows." if phase2 else "Build reference; use full-size sheets for cutting.",column,6.5,leading=3.5)
+    y=top
+    _text(c,MARGIN,y,f"{design['total_faces']} PANELS / {len(design['templates'])} REUSABLE TYPES",9,True)
     y-=6
-    _text(c,MARGIN,y,"JOINT SECTIONS / DASHED UPPER WEDGE IS WASTE",8,True)
-    sy=y-24
-    for ox,side in [(MARGIN+5,"IN"),(w/2+8,"OUT")]:
-        c.setStrokeColor(INK);c.setFillColor(HexColor("#e6e9e3"))
-        path=c.beginPath()
-        path.moveTo(ox*mm,sy*mm);path.lineTo((ox+9)*mm,(sy+13)*mm)
-        path.lineTo((ox+56)*mm,(sy+13)*mm);path.lineTo((ox+56)*mm,sy*mm);path.close()
-        c.drawPath(path,fill=1,stroke=1)
-        c.setDash(2,2);_line(c,ox,sy,ox,sy+13);_line(c,ox,sy+13,ox+9,sy+13);c.setDash()
-        _text(c,ox+9,sy+17,f"{side}: {'INTERIOR' if side=='IN' else 'EXTERIOR'} UP",7,True)
-        _text(c,ox+2,sy-5,"EXTERIOR DOWN" if side=="IN" else "INTERIOR DOWN",7)
-    y=sy-16
-    _text(c,MARGIN,y,"Convex 120 deg / reflex 240 deg: both use 60 deg. At 6 mm thickness, offset = 3.4641 mm.",8)
-    y-=6
-    _text(c,MARGIN,y,"IN retains the exterior edge. OUT cuts an extended blank back to the exterior reference.",8)
-    y-=9
-    _text(c,MARGIN,y,"Dry-fit one convex and one reflex coupon in scrap before cutting a full set.",8,True)
-    y-=6
-    _text(c,MARGIN,y,"Use the assembly sheets to match joint IDs and parent face IDs (Fxxx.subface).",8)
-    y-=6
-    if plan["collision_pages"]:
-        _text(c,MARGIN,y,"OVERLAP NOTES: bevel first, then shape marked corners to fit. See overlap references; not cut lines.",7,True)
-        y-=6
+    summary=" / ".join(f"{t['id']}: MAKE {t['quantity']}" for t in design["templates"][:6])
+    y=_wrapped(c,MARGIN,y,summary,column,8,True)
+    if len(design["templates"])>6:
+        y=_wrapped(c,MARGIN,y,"Full quantities are on the template sheets.",column,7)
+    y-=3
+    _text(c,MARGIN,y,"PRINT, CUT & ASSEMBLE",8,True);y-=6
+    instructions = [
+        "Print at Actual Size / 100%; turn off Fit, Shrink and borderless enlargement. Check both calibration marks.",
+    ]
+    if phase2:
+        instructions += [
+            "Trace the solid RAW BLANK outline, including reflex-edge extensions.",
+            "IN: cut and bevel INTERIOR FACE UP / EXTERIOR FACE DOWN.",
+            "OUT: bevel EXTERIOR FACE UP / INTERIOR FACE DOWN. Keep edge IDs when turning over.",
+            "Dash-dot = final exterior reference. Dashed = interior surface. Neither is a cutting outline.",
+            "Keep slab thickness inward of the exterior reference. Edge lengths are working reference lengths.",
+            "Match panel and joint IDs using the assembly sheets. Dry-fit convex/reflex scrap joints first.",
+        ]
+    else:
+        instructions += [
+            "Cut AND bevel EXTERIOR FACE DOWN / INTERIOR FACE UP.",
+            "Trace the full solid outline. Remove the upper waste on that same side; keep the full exterior edge underneath.",
+            "Dashed lines show the remaining upper INTERIOR face; they are not a cutting outline.",
+            "Make the quantity on each template. Test-fit a scrap joint before making a full set.",
+        ]
+    instructions.append("Angles are from the slab plane: 90 deg = normal; 0 deg = parallel. Shrinkage is applied once.")
+    if design.get("chirality"):
+        instructions.append("Chiral form: preserve the handedness shown. Rotate templates; never mirror them.")
+    if design["cut_edge_mm"] < 25:
+        instructions.append("Small panels may have limited room for legible bevel labels; check before cutting.")
     if plan["tiled"]:
-        _text(c,MARGIN,y,"Tiled blanks: align registration crosses with 10 mm overlap; join the entire outline first.",8)
+        instructions.append("Tiled panels: match ID and row/column; align crosses with 10 mm overlap before tracing.")
+    if plan["collision_pages"]:
+        instructions.append("Pale red / dots = fitting areas. Bevel first, then shape marked corners to fit; overlaps do not rule out assembly.")
+    for instruction in instructions:
+        y=_wrapped(c,MARGIN,y,instruction,column,8,leading=4.1)-1.6
+    y-=2
+    if phase2:
+        y=_wrapped(c,MARGIN,y,"EXPERIMENTAL / DRY-FIT REQUIRED",column,8,True)-2
+    # Longer custom or tiled plans keep the safety instructions in full. The
+    # bevel illustration is supplemental, and yields to them on compact paper.
+    if y-36 >= 52:
+        y=_joint_section(c,MARGIN,y,column,phase2)
+    if y >= 63:
+        note="Optimized for adjustable wire bevelers such as the Precision Beveler by KellyHoferStudios."
+        end=_wrapped(c,MARGIN,y,note,column,7,leading=3.7)
+        c.linkURL(BEVELER_URL,(MARGIN*mm,end*mm,(MARGIN+column)*mm,(y+3)*mm),relative=0)
     _ruler(c,28)
     c.setStrokeColor(INK);c.setLineWidth(.5)
     c.rect((w-MARGIN-25.4)*mm,22*mm,25.4*mm,25.4*mm)
@@ -459,80 +602,7 @@ def _collision_pages(c,design,plan):
 
 
 def _cover(c, design, plan):
-    if design.get("phase2"):
-        return _phase2_cover(c,design,plan)
-    w, h = plan["paper_width_mm"], plan["paper_height_mm"]
-    _header(c, design, design["name"], 1, plan["page_count"], w, h)
-    y = h - 58
-    _text(c, MARGIN, y, f"{len(design['templates'])} reusable templates / {design['total_faces']} clay panels", 11, True)
-    y -= 10
-    for template in design["templates"]:
-        _text(c, MARGIN, y, f"{template['id']}   {template['sides']}-sided panel   /   MAKE {template['quantity']}", 9, True)
-        y -= 6
-        pattern = " / ".join(f"{e['angle_deg']:.{design['parameters']['angle_precision']}f} deg" for e in template["edges"])
-        _text(c, MARGIN + 6, y, pattern, 8)
-        y -= 10
-    y -= 2
-    for i, line in enumerate([
-        "1. Print at Actual Size / 100%. Turn off Fit, Shrink and borderless enlargement.",
-        "2. Check the 100 mm ruler and 1-inch square with a physical ruler.",
-        "3. Keep EXTERIOR FACE DOWN and INTERIOR FACE UP for cutting AND beveling.",
-        "4. Trace and cut the full solid outline, then bevel off the upper waste on that same side.",
-        "5. Preserve the exterior edge underneath. Tool angles are from the slab plane; 90 deg = vertical.",
-        "6. Dashed lines show the remaining upper INTERIOR face, NOT a cutting outline.",
-        "7. Make the quantity shown for each template; test-fit a scrap joint first.",
-    ]):
-        _text(c, MARGIN, y - i * 7, line, 8)
-    y -= 62
-    _text(c, MARGIN, y, "JOINT SECTION / PRESERVE THE EXTERIOR EDGE", 8, True)
-    # Cutting position: interior up, exterior down. The upper-left wedge is waste.
-    x, sy = MARGIN + 8, y - 25
-    c.setFillColor(HexColor("#e6e9e3"))
-    path = c.beginPath()
-    path.moveTo(x * mm, sy * mm)
-    path.lineTo((x + 12) * mm, (sy + 16) * mm)
-    path.lineTo((x + 65) * mm, (sy + 16) * mm)
-    path.lineTo((x + 65) * mm, sy * mm)
-    path.close()
-    c.drawPath(path, fill=1, stroke=1)
-    c.setDash(2, 2)
-    _line(c, x, sy, x, sy + 16)
-    _line(c, x, sy + 16, x + 12, sy + 16)
-    c.setDash()
-    _text(c, x + 14, sy + 19, "INTERIOR FACE UP", 7)
-    _text(c, x + 6, sy - 5, "EXTERIOR FACE DOWN / keep full edge", 7)
-    _text(c, x - 7, sy + 10, "waste", 6)
-    _text(c, x + 80, sy + 10, "Inset = thickness / tan(tool angle)", 8)
-    _text(c, x + 80, sy + 3, "Diagram schematic; labels are tool settings.", 7)
-    y = sy - 16
-    if plan["tiled"]:
-        _text(c, MARGIN, y, "TILED PANELS: match template ID and row/column; overlap sheets by 10 mm.", 8, True)
-        _text(c, MARGIN, y - 6, "Align matching registration crosses in the overlap. Join the outline before tracing.", 8)
-        y -= 15
-    _text(c, MARGIN, y, "Dimensions assume uniform linear shrinkage. Clay and wire behaviour need a test joint.", 7)
-    y -= 6
-    tool_note = "Optimized for adjustable wire bevelers such as the Precision Beveler by KellyHoferStudios."
-    _text(c, MARGIN, y, tool_note, 7)
-    c.linkURL(BEVELER_URL, (MARGIN * mm, (y - 1) * mm,
-                          MARGIN * mm + stringWidth(tool_note, "Helvetica", 7), (y + 3) * mm), relative=0)
-    for warning in design["warnings"]:
-        # Wrap warnings to a physical line length, keeping cover text within margins.
-        words, lines, line = warning.split(), [], ""
-        for word in words:
-            candidate = f"{line} {word}".strip()
-            if stringWidth(candidate, "Helvetica", 7) > (w - 2 * MARGIN) * mm:
-                lines.append(line)
-                line = word
-            else:
-                line = candidate
-        lines.append(line)
-        for line in lines:
-            y -= 5
-            _text(c, MARGIN, y, line, 7)
-    _ruler(c, 28)
-    c.setLineWidth(0.5)
-    c.rect((w - MARGIN - 25.4) * mm, 22 * mm, 25.4 * mm, 25.4 * mm)
-    _text(c, w - MARGIN - 25.4, 17, "1 inch / 25.4 mm", 7)
+    _reference_cover(c, design, plan)
 
 
 def pdf_bytes(design):
@@ -648,6 +718,7 @@ def svg_bytes(design, template_id):
         metadata.extend(["OVERLAP WARNING: manually shape hatched corners to fit after beveling; overlaps do not rule out assembly.",
                          "Affected copies: "+_copy_summary(template)+". Match each case using the PDF overlap reference.",
                          "V# marks shared corners. Copies share matching overlap marks; hatching is not a cut line."])
+    metadata.append(SITE_LABEL)
     # Keep metadata legible even when the physical panel is very small. Widen
     # the document, preserving one viewBox unit per mm and the cut outline.
     document_width = max(w + 20, max(stringWidth(line, "Helvetica", 2.5 * mm) / mm for line in metadata) + 20)
@@ -733,4 +804,5 @@ def calibration_pdf_bytes(parameters):
     c.setStrokeColor(INK);c.setLineWidth(.5)
     c.rect((w-MARGIN-25.4)*mm,22*mm,25.4*mm,25.4*mm)
     _text(c,w-MARGIN-25.4,17,"1 inch / 25.4 mm",7)
+    _print_footer(c)
     c.showPage();c.save();return stream.getvalue()

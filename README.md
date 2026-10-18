@@ -194,8 +194,9 @@ mesh in fixed model axes, including edited face apices. Fired dimensions use the
 requested edge length; working dimensions include shrinkage compensation. These
 are estimates of the exterior reference bounds, not a guarantee of fired size.
 
-Phase 1 compatibility is covered by frozen PDF hashes for all 18 default solids;
-their PDF bytes remain unchanged. Phase 2 extends the mesh and export pipeline
+Original template vectors are covered by frozen drawing hashes for all 18 default
+solids; covers and footers may evolve without changing cutting geometry. Full PDF
+hashes also track the current reviewed exports. Phase 2 extends the mesh and export pipeline
 without replacing the original convex template path. Self-intersecting star
 polyhedra, a stella-octangula exterior-boundary construction, general CSG,
 noncentral apices and automatic assembly sequencing remain outside this release.
@@ -246,6 +247,15 @@ UI reports the sheet count. Designs requiring more than 120 sheets are rejected.
 
 Every PDF includes a true 100 mm ruler on each page and a 1-inch square on the
 instructions sheet. Geometry is vector, with `72 / 25.4` PDF points per mm.
+The cover includes two exterior assembly views of the selected mesh, including
+face edits, plus estimated fired dimensions. The opposite view includes the
+underside. Letters match reusable template IDs; transformed panel IDs appear
+where they fit legibly. Visible faces needing manual fitting are pale red, with
+dots at visible shared collision corners. These assembly views are schematic,
+not cutting patterns. Their vector visibility accounts for recesses and hidden
+surfaces, and preserves the handedness of chiral solids. Cutting templates and
+calibration marks remain at actual size; the views add no sheets. Every PDF page
+(including calibration coupons) and SVG export carries the website address.
 Polygons never scale to fit. Labels decrease in size if needed; export is blocked
 if they cannot fit legibly. Phase 1 screen annotations are enlarged for
 readability; transformed previews use the printable annotation positions.
@@ -275,7 +285,8 @@ exports, calibration, tiling, SVG units, and the API workflow. PDF checks inspec
 vector paths and text using PyMuPDF. Phase 2 adds analytic signed joints, miter
 solid contact/overlap, all seven presets, variable edge lengths, stable face and
 joint IDs, shrinkage, surface rejection, thickness rejection, assembly references,
-calibration coupons and byte-identical Phase 1 PDF regressions.
+calibration coupons, frozen original template vectors, deterministic PDF exports,
+and assembly-view visibility checked against independent 3D ray intersections.
 
 With the Docker app running, browser QA can use a disposable container. First
 install frontend dependencies with `npm ci` in `frontend`, then run from the

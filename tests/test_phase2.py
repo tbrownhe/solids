@@ -17,11 +17,19 @@ from solids.printing import pdf_bytes, svg_bytes, page_plan, edge_annotations, c
 from solids.transforms import PRESETS
 
 
-def test_phase1_default_exports_are_byte_identical():
+def test_default_exports_match_reviewed_pdf_baseline():
     baseline=json.loads((Path(__file__).parent/'fixtures'/'phase1_pdf_sha256.json').read_text())
     for solid_id,expected in baseline.items():
         output=pdf_bytes(make_design(Parameters(solid_id=solid_id)))
         assert hashlib.sha256(output).hexdigest()==expected,solid_id
+
+
+def test_assembly_views_and_footer_preserve_original_template_vectors():
+    baseline=json.loads((Path(__file__).parent/'fixtures'/'phase1_template_paths_sha256.json').read_text())
+    for solid_id,expected in baseline.items():
+        doc=pymupdf.open(stream=pdf_bytes(make_design(Parameters(solid_id=solid_id))),filetype='pdf')
+        actual=[hashlib.sha256(repr(page.get_drawings()).encode()).hexdigest() for page in list(doc)[1:]]
+        assert actual==expected,solid_id
 
 
 @pytest.mark.parametrize("turn,delta,tool,kind,side",[(60,120,60,"convex","interior"),(-60,240,60,"concave","exterior"),(0,180,90,"flat","interior"),(1e-10,180,90,"flat","interior")])

@@ -8,7 +8,7 @@ import pytest
 from reportlab.lib.units import mm
 
 from solids.geometry import Parameters, make_design
-from solids.printing import BOTTOM, MARGIN, OVERLAP, PAPER, TOP, _inside, _overlap, edge_annotations, page_plan, pdf_bytes, svg_bytes
+from solids.printing import BOTTOM, MARGIN, OVERLAP, PAPER, TOP, SITE_LABEL, SITE_URL, _inside, _overlap, calibration_pdf_bytes, edge_annotations, page_plan, pdf_bytes, svg_bytes
 from solids.registry import SOLIDS
 
 
@@ -18,6 +18,9 @@ def test_all_solids_default_pdf_is_vector_and_text_stays_on_page(solid_id):
     data = pdf_bytes(design)
     doc = pymupdf.open(stream=data, filetype="pdf")
     assert len(doc) == page_plan(design)["page_count"]
+    assert "FINISHED FORM / EXTERIOR VIEWS" in doc[0].get_text()
+    assert "OPPOSITE VIEW" in doc[0].get_text()
+    assert "Views not to scale" in doc[0].get_text()
     for page in doc:
         assert not page.get_images()
         assert page.get_drawings()
@@ -25,6 +28,8 @@ def test_all_solids_default_pdf_is_vector_and_text_stays_on_page(solid_id):
         assert "EXTERIOR FACE DOWN" in page.get_text()
         assert "INTERIOR FACE UP" in page.get_text()
         assert "underside" not in page.get_text()
+        assert SITE_LABEL in page.get_text()
+        assert any(link.get("uri") == SITE_URL for link in page.get_links())
         for word in page.get_text("words"):
             rect = pymupdf.Rect(word[:4])
             assert rect.x0 >= 0 and rect.y0 >= 0
@@ -130,3 +135,25 @@ def test_small_svg_keeps_metadata_in_the_physical_document():
         if "x" in text.attrib:
             assert float(text.attrib["x"]) + stringWidth(text.text, "Helvetica", 2.5 * mm) / mm < x + width
             assert float(text.attrib["y"]) < y + height
+
+
+def test_calibration_coupons_and_svg_include_website():
+    doc=pymupdf.open(stream=calibration_pdf_bytes(Parameters()),filetype="pdf")
+    assert SITE_LABEL in doc[0].get_text()
+    assert any(link.get("uri")==SITE_URL for link in doc[0].get_links())
+    assert SITE_LABEL.encode() in svg_bytes(make_design(Parameters()),"A")
+
+
+@pytest.mark.parametrize("paper",PAPER)
+def test_overlap_cover_marks_actual_affected_faces_without_extra_sheets(paper):
+    design=make_design(Parameters(solid_id="dodecahedron",preset_id="stellated-dodecahedron",
+                                 face_transforms={"F001":{"mode":"flat"}},page_format=paper))
+    doc=pymupdf.open(stream=pdf_bytes(design),filetype="pdf")
+    cover=doc[0]
+    assert "Pale red / dots" in cover.get_text()
+    assert "overlaps do not rule out assembly" in " ".join(cover.get_text().split())
+    assert "F001" in cover.get_text()
+    assert any(d["fill"] and d["fill"][0]>.9 and d["fill"][1]<.9 for d in cover.get_drawings())
+    assert len(doc)==page_plan(design)["page_count"]
+    for page in doc:
+        assert SITE_LABEL in page.get_text()
