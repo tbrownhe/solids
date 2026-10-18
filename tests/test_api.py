@@ -60,7 +60,7 @@ def test_phase2_catalog_presets_and_export_workflow():
     assert client.post('/api/design',json={'solid_id':'cube','edge_length_mm':120}).json()['phase2'] is False
 
 
-def test_phase2_invalid_offsets_and_thick_intersections_block_export():
+def test_phase2_invalid_offsets_block_export_but_overlaps_are_printable():
     too_deep={'solid_id':'cube','preset_id':'excavated-cube','apex_offset_mm':61}
     assert client.post('/api/design',json=too_deep).status_code==422
     invalid_face={'solid_id':'cube','face_transforms':{'F999':{'mode':'inward','offset_mm':8}}}
@@ -68,5 +68,12 @@ def test_phase2_invalid_offsets_and_thick_intersections_block_export():
     overlap={'face_transforms':{'F009':{'mode':'inward','offset_mm':12}}}
     preview=client.post('/api/design',json=overlap)
     assert preview.status_code==200
-    assert 'overlap' in preview.json()['export_error']
-    assert client.post('/api/export/pdf',json=overlap).status_code==422
+    design=preview.json()
+    assert design['export_error'] is None
+    assert design['thickness_check']['status']=='overlap'
+    assert design['layout']['collision_pages']>0
+    assert any(t['collision_annotations'] for t in design['templates'])
+    assert client.post('/api/export/pdf',json=overlap).status_code==200
+    marked=next(t for t in design['templates'] if t['collision_regions'])
+    svg=client.post('/api/export/svg/'+marked['id'],json=overlap)
+    assert svg.status_code==200 and b'hatch' in svg.content and b'OVERLAP' in svg.content

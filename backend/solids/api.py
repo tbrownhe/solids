@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 
 from .geometry import Parameters, make_design
-from .printing import center_annotations, edge_annotations, page_plan, pdf_bytes, svg_bytes, calibration_pdf_bytes
+from .printing import center_annotations, collision_vertex_annotations, edge_annotations, page_plan, pdf_bytes, svg_bytes, calibration_pdf_bytes
 from .registry import list_solids
 from .transforms import PRESETS, SUPPORTED_BASES
 
@@ -46,9 +46,11 @@ def design(parameters: Parameters):
         try:
             template["annotations"] = edge_annotations(template, parameters.angle_precision)
             template["center_annotations"] = center_annotations(template, template["annotations"])
+            template["collision_annotations"] = collision_vertex_annotations(template,template["annotations"]+template["center_annotations"])
         except ValueError as error:
             template["annotations"] = []
             template["center_annotations"] = []
+            template["collision_annotations"] = []
             result["export_error"] = str(error)
     if any(not template["inset_polygon_mm"] for template in result["templates"]):
         result["export_error"] = "Bevels consume an interior face. Reduce slab thickness or increase edge length."

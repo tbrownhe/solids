@@ -157,10 +157,20 @@ panels and self-intersections. Transformed designs also check intersections of
 the actual finite-thickness mitered panel solids. A valid surface can still fail
 this fabrication check: high-valence corners in cuboctahedron and
 rhombicuboctahedron can require additional corner relief, even where the base
-surface is untouched. Such edits remain inspectable but their exports are
-blocked. Corner-relief design is not implemented. Original Phase 1 convex
+surface is untouched. Such edits remain printable: templates hatch the projected
+overlap regions and label shared corners V1, V2, etc. The PDF includes the affected
+panel instances and corner references. A reusable template combines warnings for
+all its copies; consult the instance reference before relieving a particular
+panel. Hatching is a fit warning, not a cut line. Automatic corner-relief design
+is not implemented. Invalid surfaces, collapsed panels and unreadable templates
+still block export. Original Phase 1 convex
 exports retain their prior behavior; their preservation does not certify these
 multi-face corners physically.
+
+The studio shows assembled width, depth and height from the exterior reference
+mesh in fixed model axes, including edited face apices. Fired dimensions use the
+requested edge length; working dimensions include shrinkage compensation. These
+are estimates of the exterior reference bounds, not a guarantee of fired size.
 
 Phase 1 compatibility is covered by frozen PDF hashes for all 18 default solids;
 their PDF bytes remain unchanged. Phase 2 extends the mesh and export pipeline

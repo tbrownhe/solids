@@ -19,9 +19,11 @@ BEVELER_URL = "https://www.etsy.com/listing/4466016418/precision-beveler-pottery
 
 def page_plan(design):
     width, height = PAPER[design["parameters"]["page_format"]]
-    usable_w, usable_h = width - 2 * MARGIN, height - TOP - BOTTOM
+    usable_w = width - 2 * MARGIN
     pages = []
     for template in design["templates"]:
+        bottom=BOTTOM+(12 if template.get("collision_regions") else 0)
+        usable_h=height-TOP-bottom
         points = np.array(template["polygon_mm"])
         w, h = points.max(axis=0)
         cols = max(1, ceil((w - OVERLAP - 1e-7) / (usable_w - OVERLAP)))
@@ -33,14 +35,19 @@ def page_plan(design):
             for col in range(cols):
                 pages.append({"template_id": template["id"], "row": row + 1, "col": col + 1,
                               "rows": rows, "cols": cols,
+                              "bottom_mm":bottom,"usable_height_mm":usable_h,
                               "offset_x": MARGIN + (canvas_w - w) / 2 - col * (usable_w - OVERLAP),
-                              "offset_y": BOTTOM + (canvas_h - h) / 2 - row * (usable_h - OVERLAP)})
+                              "offset_y": bottom + (canvas_h - h) / 2 - row * (usable_h - OVERLAP)})
     assembly_rows = max(1, int((height-101)/5)+1)
     assembly_pages = ceil(len(design["edges"])/assembly_rows) if design.get("phase2") else 0
-    if len(pages) + 1 + assembly_pages > 120:
+    collision_rows=max(1,int((height-116)/7)+1)
+    collision_count=len((design.get("thickness_check") or {}).get("collisions",[]))
+    collision_pages=ceil(collision_count/collision_rows)
+    if len(pages) + 1 + assembly_pages + collision_pages > 120:
         raise ValueError("This design needs more than 120 sheets. Reduce edge length or use A3.")
-    return {"page_count": len(pages) + 1 + assembly_pages, "template_pages": pages,
+    return {"page_count": len(pages) + 1 + assembly_pages + collision_pages, "template_pages": pages,
             "assembly_pages":assembly_pages,"assembly_rows":assembly_rows,
+            "collision_pages":collision_pages,"collision_rows":collision_rows,
             "paper_width_mm": width, "paper_height_mm": height,
             "overlap_mm": OVERLAP, "tiled": any(p["cols"] * p["rows"] > 1 for p in pages)}
 
@@ -224,6 +231,58 @@ def center_annotations(template, edge_labels):
     raise ValueError(f"Template {template['id']} is too small for a legible quantity label. Increase the working edge length.")
 
 
+def collision_vertex_annotations(template, labels):
+    """Optional corner callouts never displace bevel or quantity instructions."""
+    result=[]
+    reference=np.array(template.get("reference_polygon_mm",template["polygon_mm"]))
+    center=reference.mean(axis=0)
+    for i in template.get("collision_vertices",[]):
+        point=reference[i]
+        direction=center-point;direction/=np.linalg.norm(direction)
+        text=f"V{i+1}"
+        font=6
+        half_w=stringWidth(text,"Helvetica-Bold",font)/mm/2;half_h=font/mm*.65
+        for distance in (4,6,8,10,12,16,20,24):
+            position=point+direction*distance
+            corners=[(position+[x,y]).tolist() for x,y in ((-half_w,-half_h),(half_w,-half_h),(half_w,half_h),(-half_w,half_h))]
+            if (all(_inside(p,template["polygon_mm"],.6) for p in corners)
+                    and all(not _overlap(corners,other["corners"]) for other in labels+result)):
+                result.append({"text":text,"center":position.tolist(),"point":point.tolist(),
+                               "font":font,"corners":corners})
+                break
+    return result
+
+
+def _collision_marks(c,template,ox,oy,labels):
+    for region in template.get("collision_regions",[]):
+        polygon=np.array(region["polygon_mm"])
+        c.saveState()
+        path=c.beginPath();path.moveTo((ox+polygon[0,0])*mm,(oy+polygon[0,1])*mm)
+        for x,y in polygon[1:]:path.lineTo((ox+x)*mm,(oy+y)*mm)
+        path.close()
+        c.setStrokeColor(GRAY);c.setLineWidth(.3)
+        c.drawPath(path,stroke=1,fill=0)
+        c.clipPath(path,stroke=0,fill=0)
+        low,high=polygon.min(axis=0),polygon.max(axis=0)
+        for start in np.arange(low[0]-high[1],high[0]-low[1]+1.5,1.5):
+            _line(c,ox+start+low[1],oy+low[1],ox+start+high[1],oy+high[1],.25)
+        c.restoreState()
+    for label in labels:
+        c.setStrokeColor(GRAY)
+        _line(c,ox+label["point"][0],oy+label["point"][1],ox+label["center"][0],oy+label["center"][1],.25)
+        _text(c,ox+label["center"][0]-stringWidth(label["text"],"Helvetica-Bold",label["font"])/mm/2,
+              oy+label["center"][1]-.65,label["text"],label["font"],True)
+
+
+def _affected_copies(template):
+    return sorted({w["instance_id"] for w in template.get("collision_warnings",[])})
+
+
+def _copy_summary(template):
+    copies=_affected_copies(template)
+    return ", ".join(copies[:5])+(f" and {len(copies)-5} more" if len(copies)>5 else "")
+
+
 def _text(c, x, y, text, size=9, bold=False, color=INK):
     c.setFillColor(color)
     c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
@@ -293,11 +352,13 @@ def _reference_outline(c,template,ox,oy):
 def _phase2_cover(c,design,plan):
     w,h=plan["paper_width_mm"],plan["paper_height_mm"]
     _header(c,design,design["name"],1,plan["page_count"],w,h)
+    size=" x ".join(f"{value:.1f}" for value in design["dimensions"]["fired_mm"])
+    _text(c,MARGIN,h-47,f"ESTIMATED FIRED SIZE / W x D x H: {size} mm (exterior reference)",7)
     y=h-57
     _text(c,MARGIN,y,"EXPERIMENTAL FABRICATION / DRY-FIT REQUIRED",11,True)
     y-=9
     for line in [
-        "Reference mesh and miter solids are checked mathematically; clay fit is not physically verified.",
+        "Reference surfaces are checked; thick-panel overlap areas are marked when found. Test clay fit.",
         "Keep thickness on the inward side of the exterior reference surface.",
         "IN: bevel with INTERIOR FACE UP. OUT: bevel with EXTERIOR FACE UP.",
         "Mixed panels need cuts from both sides. Preserve edge IDs when turning the clay over.",
@@ -338,6 +399,9 @@ def _phase2_cover(c,design,plan):
     y-=6
     _text(c,MARGIN,y,"Use the assembly sheets to match joint IDs and parent face IDs (Fxxx.subface).",8)
     y-=6
+    if plan["collision_pages"]:
+        _text(c,MARGIN,y,"OVERLAP NOTES: hatching flags manual-fit areas. See collision references; these are not cut lines.",7,True)
+        y-=6
     if plan["tiled"]:
         _text(c,MARGIN,y,"Tiled blanks: align registration crosses with 10 mm overlap; join the entire outline first.",8)
     _ruler(c,28)
@@ -369,6 +433,28 @@ def _assembly_pages(c,design,plan):
             _text(c,w-48,y,f"{edge['angle_deg']:.{design['parameters']['angle_precision']}f} deg {side}",7)
             y-=5
         _text(c,MARGIN,34,"Fxxx = original base face. .n = pyramid subface. Joint IDs occur on both mating panels.",7)
+        _ruler(c);c.showPage()
+
+
+def _collision_pages(c,design,plan):
+    collisions=(design.get("thickness_check") or {}).get("collisions",[])
+    w,h=plan["paper_width_mm"],plan["paper_height_mm"]
+    rows=plan["collision_rows"]
+    for pi in range(plan["collision_pages"]):
+        page_number=2+len(plan["template_pages"])+plan["assembly_pages"]+pi
+        _header(c,design,"OVERLAP / MANUAL RELIEF REFERENCE",page_number,plan["page_count"],w,h)
+        _text(c,MARGIN,h-49,"Hatching combines affected copies on each reusable pattern. Check your instance IDs below.",7)
+        _text(c,MARGIN,h-55,"Vn is the shared reference corner at the start of En, in the interior view. Hatching is not a cut line.",7)
+        _text(c,MARGIN,h-61,"Review or relieve the marked area by hand and dry-fit; no automatic correction is applied.",7)
+        _text(c,MARGIN,h-71,"CASE",7,True);_text(c,34,h-71,"PANEL / PATTERN / CORNER",7,True)
+        _text(c,113,h-71,"OVERLAPS PANEL / PATTERN / CORNER",7,True)
+        y=h-79
+        for collision in collisions[pi*rows:(pi+1)*rows]:
+            _text(c,MARGIN,y,collision["id"],7)
+            for x,panel in zip((34,113),collision["panels"]):
+                corners=",".join(panel["corner_labels"]) or "hatched area"
+                _text(c,x,y,f"{panel['instance_id']} / {panel['template_id']} / {corners}",7)
+            y-=7
         _ruler(c);c.showPage()
 
 
@@ -457,6 +543,7 @@ def pdf_bytes(design):
         raise ValueError("Cannot export: bevels consume an interior face. Reduce thickness or increase edge length.")
     annotations = {t["id"]: edge_annotations(t, design["parameters"]["angle_precision"]) for t in design["templates"]}
     center_labels = {t["id"]: center_annotations(t, annotations[t["id"]]) for t in design["templates"]}
+    corner_labels={t["id"]:collision_vertex_annotations(t,annotations[t["id"]]+center_labels[t["id"]]) for t in design["templates"]}
     stream = BytesIO()
     w, h = plan["paper_width_mm"], plan["paper_height_mm"]
     c = Canvas(stream, pagesize=(w * mm, h * mm), invariant=1, pageCompression=1)
@@ -476,8 +563,9 @@ def pdf_bytes(design):
         ox, oy = page["offset_x"], page["offset_y"]
         c.saveState()
         clip = c.beginPath()
-        clip.rect(MARGIN * mm, BOTTOM * mm, (w - 2 * MARGIN) * mm, (h - TOP - BOTTOM) * mm)
+        clip.rect(MARGIN * mm, page["bottom_mm"] * mm, (w - 2 * MARGIN) * mm, page["usable_height_mm"] * mm)
         c.clipPath(clip, stroke=0, fill=0)
+        _collision_marks(c,template,ox,oy,corner_labels[template["id"]])
         c.setStrokeColor(INK)
         _outline(c, template["polygon_mm"], ox, oy)
         c.setStrokeColor(GRAY)
@@ -501,7 +589,7 @@ def pdf_bytes(design):
         # A global lattice puts identical crosses in adjacent overlap windows.
         # Black crosses are separate from the uninterrupted cut outline.
         if tiled:
-            pw, ph = w - 2 * MARGIN, h - TOP - BOTTOM
+            pw, ph = w - 2 * MARGIN, page["usable_height_mm"]
             grid_w, grid_h = pw + (page["cols"] - 1) * (pw - OVERLAP), ph + (page["rows"] - 1) * (ph - OVERLAP)
             panel_w, panel_h = polygon.max(axis=0)
             gx, gy = ox - (grid_w - panel_w) / 2, oy - (grid_h - panel_h) / 2
@@ -512,6 +600,9 @@ def pdf_bytes(design):
                 for y in ys:
                     _cross(c, gx + x, gy + y)
         c.restoreState()
+        if template.get("collision_regions"):
+            _text(c,MARGIN,47,"OVERLAP WARNING / Hatching marks areas for manual relief, not cut lines. V# labels shared corners.",7,True)
+            _text(c,MARGIN,41,"Affected copies: "+_copy_summary(template)+". See the overlap reference for the full list.",7)
         if design.get("phase2"):
             _text(c,MARGIN,34,"IN = INTERIOR UP / OUT = EXTERIOR UP. Lengths refer to the exterior reference, not the blank.",7)
         else:
@@ -520,6 +611,7 @@ def pdf_bytes(design):
         c.showPage()
     if design.get("phase2"):
         _assembly_pages(c,design,plan)
+        _collision_pages(c,design,plan)
     c.save()
     return stream.getvalue()
 
@@ -536,6 +628,7 @@ def svg_bytes(design, template_id):
     w, h = np.array(points).max(axis=0)
     labels = edge_annotations(template, design["parameters"]["angle_precision"])
     center_labels = center_annotations(template, labels)
+    corner_labels=collision_vertex_annotations(template,labels+center_labels)
     polygon = lambda p: " ".join(f"{x:.8f},{h-y:.8f}" for x, y in p)
     metadata = [f'{template_id}: MAKE {template["quantity"]} / INTERIOR FACE UP / EXTERIOR FACE DOWN',
                 f'Working edge {design["cut_edge_mm"]:.2f} mm / slab {design["parameters"]["thickness_mm"]:g} mm / print at 100%',
@@ -549,14 +642,29 @@ def svg_bytes(design, template_id):
                     'Reference dimensions in working mm; angles from slab plane, 90 deg = normal.',
                     'Test a convex/reflex scrap joint before fabrication. Match edges using the PDF assembly table.']
         metadata[3]="Reference edges (working mm): "+" / ".join(f"{e['label']} {e['length_mm']:.2f}" for e in template["edges"])
+        size=" x ".join(f"{value:.1f}" for value in design["dimensions"]["fired_mm"])
+        metadata.append(f"Estimated fired model size (W x D x H): {size} mm")
+    if template.get("collision_regions"):
+        metadata.extend(["OVERLAP WARNING: hatching marks projected overlap through slab thickness; manual relief may be needed.",
+                         "Affected copies: "+_copy_summary(template)+". Match each case using the PDF overlap reference.",
+                         "V# marks shared corners. Regions combine affected copies; hatching is not a cut line."])
     # Keep metadata legible even when the physical panel is very small. Widen
     # the document, preserving one viewBox unit per mm and the cut outline.
     document_width = max(w + 20, max(stringWidth(line, "Helvetica", 2.5 * mm) / mm for line in metadata) + 20)
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{document_width:.8f}mm" height="{h+50:.8f}mm" viewBox="-10 -10 {document_width:.8f} {h+50:.8f}">',
+    document_height=h+max(50,18+5*len(metadata))
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{document_width:.8f}mm" height="{document_height:.8f}mm" viewBox="-10 -10 {document_width:.8f} {document_height:.8f}">',
              f'<title>{escape(design["name"])} template {template_id}, make {template["quantity"]}</title>',
              '<g fill="none" stroke="#25332e" stroke-width="0.2">',
              f'<polygon points="{polygon(points)}"/>',
              f'<polygon points="{polygon(template["inset_polygon_mm"])}" stroke-dasharray="1.2 1.2" stroke-width="0.12"/>', '</g>']
+    if template.get("collision_regions"):
+        parts.append('<defs><pattern id="overlap-hatch" patternUnits="userSpaceOnUse" width="1.5" height="1.5"><path d="M0 1.5L1.5 0" stroke="#6b716c" stroke-width="0.1"/></pattern></defs>')
+        for region in template["collision_regions"]:
+            parts.append(f'<polygon points="{polygon(region["polygon_mm"])}" fill="url(#overlap-hatch)" stroke="#6b716c" stroke-width="0.1"/>')
+        for label in corner_labels:
+            x,y=label["center"];px,py=label["point"]
+            parts.append(f'<path d="M{px:.8f} {h-py:.8f}L{x:.8f} {h-y:.8f}" stroke="#6b716c" stroke-width="0.1"/>')
+            parts.append(f'<text x="{x:.8f}" y="{h-y:.8f}" text-anchor="middle" dominant-baseline="central" font-family="Helvetica,Arial,sans-serif" font-size="{label["font"]/mm:.8f}" font-weight="bold">{label["text"]}</text>')
     if template.get("phase2") and any(e.get("exterior_offset_mm",0)>1e-7 for e in template["edges"]):
         parts.append(f'<polygon points="{polygon(template["reference_polygon_mm"])}" fill="none" stroke="#25332e" stroke-width="0.12" stroke-dasharray="2 0.7 0.4 0.7"/>')
     for label in labels:

@@ -11,6 +11,7 @@ from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+from scipy.spatial import ConvexHull
 
 from .registry import get_solid
 from .mesh import analyze_mesh
@@ -87,6 +88,48 @@ def inset_polygon(polygon, insets):
     return [p.tolist() for p in result] if area > 1e-6 else []
 
 
+def collision_annotations(mesh, templates, collisions):
+    """Project real 3D overlap volumes into each copy's canonical interior view."""
+    copies={instance["face_index"]:(template,instance) for template in templates for instance in template["instances"]}
+    for template in templates:
+        template["collision_regions"]=[]
+        template["collision_warnings"]=[]
+        template["collision_vertices"]=[]
+    for collision in collisions:
+        collision["panels"]=[]
+        for side,fi in enumerate(collision["faces"]):
+            template,instance=copies[fi]
+            points=mesh["vertices"][instance["vertex_ids"]]
+            u=_unit(points[1]-points[0])
+            v=np.cross(-mesh["normals"][fi],u)
+            reference=np.array(template["reference_polygon_mm"])
+            axis=_unit(reference[1]-reference[0]);across=np.array([-axis[1],axis[0]])
+            delta=np.array(collision["region_mm"])-points[0]
+            projected=reference[0]+(delta@u)[:,None]*axis+(delta@v)[:,None]*across
+            hull=ConvexHull(projected)
+            polygon=projected[hull.vertices]
+            # A reusable type can represent copies with different neighbors.
+            # Keep every case, but merge congruent marked regions for drawing.
+            key=tuple(sorted(tuple(p) for p in np.round(polygon,5)))
+            region=next((r for r in template["collision_regions"] if r["key"]==key),None)
+            if region is None:
+                region={"key":key,"polygon_mm":polygon.tolist(),"collision_ids":[],"instance_ids":[]}
+                template["collision_regions"].append(region)
+            region["collision_ids"].append(collision["id"])
+            if instance["id"] not in region["instance_ids"]:region["instance_ids"].append(instance["id"])
+            corners=[i for i,vi in enumerate(instance["vertex_ids"]) if vi in collision["shared_vertices"]]
+            for i in corners:
+                if i not in template["collision_vertices"]:template["collision_vertices"].append(i)
+            warning={"collision_id":collision["id"],"instance_id":instance["id"],
+                     "other_instance_id":collision["face_ids"][1-side],
+                     "template_id":template["id"],"corner_labels":[f"V{i+1}" for i in corners]}
+            template["collision_warnings"].append(warning)
+            collision["panels"].append(warning)
+    for template in templates:
+        template["collision_vertices"].sort()
+        for region in template["collision_regions"]:region.pop("key")
+
+
 def make_design(parameters: Parameters) -> dict:
     base = topology(parameters.solid_id)
     cut_edge = parameters.edge_length_mm / (1 - parameters.shrinkage_percent / 100)
@@ -129,6 +172,7 @@ def make_design(parameters: Parameters) -> dict:
         interior_edge_order = [0] + list(range(len(face)-1,0,-1))
         joints = [edge_lookup[tuple(sorted((a,b)))]["id"] for a,b in zip(face,face[1:]+face[:1])]
         instance = {**records[fi], "face_index":fi,
+                    "vertex_ids":[face[i] for i in [1,0]+list(range(len(face)-1,1,-1))],
                     "edges":[{"label":f"E{i+1}","joint_id":joints[j]} for i,j in enumerate(interior_edge_order)]}
         if key in groups:
             groups[key]["quantity"] += 1
@@ -210,12 +254,21 @@ def make_design(parameters: Parameters) -> dict:
         except ValueError as error:
             fabrication_error = str(error)
             warnings.append(fabrication_error)
-        warnings.append("Experimental fabrication plan: signed miter offsets are calculated, but a convex/reflex scrap-joint dry-fit is required before making the full shell.")
+        if thickness_check and thickness_check["collisions"]:
+            count=len(thickness_check["collisions"])
+            warnings.append(f"{count} thick-panel overlaps need a closer look. Templates can be printed with marked areas and panel references for manual relief.")
+        warnings.append("Construction note: a small scrap joint can help you judge the fit before making the full set.")
+    collisions=thickness_check["collisions"] if thickness_check else []
+    collision_annotations(mesh,templates,collisions)
+    working=np.ptp(vertices,axis=0)[[0,2,1]]
+    fired=working*(1-parameters.shrinkage_percent/100)
     name = construction["preset"]["name"] if phase2 and construction["preset"] else mesh["source"]["name"] + (" · modified faces" if phase2 else "")
     return {"parameters": parameters.model_dump(), "name": name,
             "geometry_version":2, "phase2":phase2, "base_faces":construction["base_faces"],
             "face_records":records, "thickness_check":thickness_check,
             "fabrication_error":fabrication_error,
+            "dimensions":{"axes":["width","depth","height"],"working_mm":working.tolist(),
+                          "fired_mm":fired.tolist(),"reference":"Exterior-reference bounds in model axes; ceramic results vary."},
             "chirality": mesh["source"].get("chirality"), "cut_edge_mm": cut_edge,
             "total_faces": len(mesh["faces"]), "total_edges": len(edges),
             "vertices": vertices.tolist(), "faces": mesh["faces"], "edges": edges,

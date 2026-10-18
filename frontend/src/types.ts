@@ -17,12 +17,15 @@ export type Solid = { id: string; name: string; family: string; face_count: numb
 export type Edge = { id: string; vertices: number[]; faces: number[]; face_ids: string[]; angle_deg: number; dihedral_deg: number; category: number; adjacent_sides: number[]; edge_kind: 'convex' | 'concave' | 'flat'; cut_side: 'interior' | 'exterior'; signed_fold_deg: number; length_mm: number }
 export type PanelEdge = { label: string; angle_deg: number; dihedral_deg: number; adjacent_sides: number; length_mm: number; category: number; inset_mm: number; exterior_offset_mm: number; cut_side: 'interior' | 'exterior'; edge_kind: string }
 export type Annotation = { text: string; center: number[]; angle: number; font: number; corners: number[][] }
-export type Template = { id: string; quantity: number; sides: number; polygon_mm: number[][]; reference_polygon_mm: number[][]; edges: PanelEdge[]; inset_polygon_mm: number[][]; face_ids: number[]; annotations: Annotation[]; center_annotations: (Annotation & {bold: boolean})[]; warnings: string[]; phase2: boolean }
+export type CollisionRegion = { polygon_mm: number[][]; collision_ids: string[]; instance_ids: string[] }
+export type CollisionWarning = { collision_id: string; instance_id: string; other_instance_id: string; template_id: string; corner_labels: string[] }
+export type Template = { id: string; quantity: number; sides: number; polygon_mm: number[][]; reference_polygon_mm: number[][]; edges: PanelEdge[]; inset_polygon_mm: number[][]; face_ids: number[]; annotations: Annotation[]; center_annotations: (Annotation & {bold: boolean})[]; warnings: string[]; phase2: boolean; collision_regions: CollisionRegion[]; collision_warnings: CollisionWarning[]; collision_annotations: {text:string;center:number[];point:number[];font:number}[] }
 export type Design = {
   parameters: Parameters; name: string; cut_edge_mm: number; total_faces: number; total_edges: number
-  phase2: boolean; geometry_version: number; base_faces: BaseFace[]; face_records: FaceRecord[]; thickness_check: {status: string; panel_count: number} | null
+  phase2: boolean; geometry_version: number; base_faces: BaseFace[]; face_records: FaceRecord[]; thickness_check: {status: string; panel_count: number; collisions: {id:string;face_ids:string[];region_mm:number[][]}[]} | null
+  dimensions: {axes:string[];working_mm:number[];fired_mm:number[];reference:string}
   vertices: number[][]; faces: number[][]; edges: Edge[]; templates: Template[]; warnings: string[]; export_error: string | null
   edge_types: { id: number; angle_deg: number; dihedral_deg: number; adjacent_sides: number[]; edge_kind: string; cut_side: 'interior' | 'exterior' }[]
-  layout: { page_count: number; tiled: boolean; overlap_mm: number; assembly_pages: number }
+  layout: { page_count: number; tiled: boolean; overlap_mm: number; assembly_pages: number; collision_pages:number }
 }
 export const COLORS = ['#a75d3b', '#6c7c57', '#557f92', '#906d94', '#a38a36']

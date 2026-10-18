@@ -8,8 +8,14 @@ export function Panel({ template, large = false, exterior = false }: { template:
   const border = Math.max(w, h) * 0.14
   const viewX = (x: number) => exterior ? w-x : x
   const flip = (p: number[]) => `${viewX(p[0])},${h - p[1]}`
+  const hatchId=`overlap-${template.id}-${large?'large':'card'}-${exterior?'out':'in'}`
   return <svg className={`panel-svg ${large ? 'large' : ''}`} viewBox={`${-border} ${-border} ${w + border * 2} ${h + border * 2}`} role="img" aria-label={`Template ${template.id}, ${template.sides} sides, make ${template.quantity}`}>
     <polygon points={points.map(flip).join(' ')} fill="#efeee4" stroke="#485446" strokeWidth={w * 0.003} strokeLinejoin="round" />
+    {template.collision_regions.length>0 && <>
+      <defs><pattern id={hatchId} patternUnits="userSpaceOnUse" width="1.5" height="1.5"><path d="M0 1.5L1.5 0" stroke="#9b5034" strokeWidth=".15"/></pattern></defs>
+      {template.collision_regions.map((region,i)=><polygon key={i} points={region.polygon_mm.map(flip).join(' ')} fill={`url(#${hatchId})`} stroke="#9b5034" strokeWidth=".2"/>)}
+      {template.collision_annotations.map(label=><g key={label.text}><line x1={viewX(label.point[0])} y1={h-label.point[1]} x2={viewX(label.center[0])} y2={h-label.center[1]} stroke="#9b5034" strokeWidth=".15"/><text x={viewX(label.center[0])} y={h-label.center[1]} textAnchor="middle" dominantBaseline="central" fontSize={label.font/(72/25.4)} fontWeight="bold" fill="#8c432b">{label.text}</text></g>)}
+    </>}
     {template.inset_polygon_mm.length > 0 && <polygon points={template.inset_polygon_mm.map(flip).join(' ')} fill="none" stroke="#8c9581" strokeWidth={w * 0.002} strokeDasharray={`${w * 0.012} ${w * 0.012}`} />}
     {template.phase2 && template.edges.some(e => e.exterior_offset_mm > 0.00001) && <polygon points={template.reference_polygon_mm.map(flip).join(' ')} fill="none" stroke="#6c7973" strokeWidth={w * .002} strokeDasharray={`${w*.02} ${w*.006} ${w*.004} ${w*.006}`}/>}
     {points.map((a, i) => {

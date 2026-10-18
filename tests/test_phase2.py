@@ -1,4 +1,5 @@
 from collections import Counter
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -9,10 +10,10 @@ import pymupdf
 import pytest
 from reportlab.lib.units import mm
 
-from solids.fabrication import offset_polygon, signed_inset, slab_cell, cells_overlap
-from solids.geometry import Parameters, make_design, topology
+from solids.fabrication import offset_polygon, signed_inset, slab_cell, cells_overlap, intersection_vertices
+from solids.geometry import Parameters, make_design, topology, collision_annotations
 from solids.mesh import analyze_mesh, signed_joint, _triangle_contact
-from solids.printing import pdf_bytes, svg_bytes, page_plan, edge_annotations, center_annotations, calibration_pdf_bytes
+from solids.printing import pdf_bytes, svg_bytes, page_plan, edge_annotations, center_annotations, collision_vertex_annotations, calibration_pdf_bytes
 from solids.transforms import PRESETS
 
 
@@ -80,11 +81,93 @@ def test_selective_rhombicuboctahedron_preserves_untouched_faces_and_ids():
             assert untouched[f"F{i+1:03d}"]==face
     assert [r["id"] for r in d["face_records"] if r["source_face_id"]==face_id]==[f"{face_id}.{i}" for i in range(1,5)]
     assert sum(t["quantity"] for t in d["templates"])==29
-    # Four-face corners in this base need additional corner relief even before
-    # the edit. Preview the valid surface but do not export intersecting slabs.
-    assert "overlap" in d["fabrication_error"]
-    with pytest.raises(ValueError,match="overlap"):
-        pdf_bytes(d)
+    # Four-face corners require manual relief, with printable locations.
+    assert d["fabrication_error"] is None
+    assert d["thickness_check"]["status"]=="overlap"
+    assert len(d["thickness_check"]["collisions"])==24
+    assert pdf_bytes(d).startswith(b"%PDF")
+
+
+def test_assembled_bounds_follow_shrinkage_and_face_edits():
+    for shrinkage in (0,20):
+        d=make_design(Parameters(solid_id="cube",shrinkage_percent=shrinkage))
+        assert d["dimensions"]["axes"]==["width","depth","height"]
+        assert d["dimensions"]["fired_mm"]==pytest.approx([120]*3)
+        assert d["dimensions"]["working_mm"]==pytest.approx([120/(1-shrinkage/100)]*3)
+    assert excavated()["dimensions"]["fired_mm"]==pytest.approx([120]*3)
+    outward=make_design(Parameters(solid_id="cube",face_transforms={f"F{i:03d}":{"mode":"outward","offset_mm":20} for i in range(1,7)}))
+    assert outward["dimensions"]["fired_mm"]==pytest.approx([160]*3)
+
+
+def test_intersection_region_finds_crossing_cells_without_contained_vertices():
+    # Crossing narrow rectangular slabs have eight new intersection vertices.
+    a=slab_cell(np.array([[-10,-1,0],[10,-1,0],[10,1,0],[-10,1,0.]]),np.array([0.,0,1]),[180]*4,2)
+    b=slab_cell(np.array([[-1,-10,0],[1,-10,0],[1,10,0],[-1,10,0.]]),np.array([0.,0,1]),[180]*4,2)
+    assert cells_overlap(a,b,1e-6)
+    for source,other in ((a,b),(b,a)):
+        assert not np.any(np.all(source["vertices"] @ other["planes"][:,:3].T+other["planes"][:,3]<=1e-6,axis=1))
+    points=intersection_vertices(a,b,1e-6)
+    assert len(points)==8
+    assert np.ptp(points,axis=0)==pytest.approx([2,2,2])
+
+
+@pytest.mark.parametrize('paper',['letter','a4','a3'])
+@pytest.mark.parametrize('edge',[120,400])
+def test_overlap_prints_mark_every_affected_template_and_reference(paper,edge):
+    d=make_design(Parameters(face_transforms={'F009':{'mode':'inward','offset_mm':12}},page_format=paper,edge_length_mm=edge))
+    plan=page_plan(d)
+    doc=pymupdf.open(stream=pdf_bytes(d),filetype='pdf')
+    assert len(doc)==plan['page_count']
+    reference=''.join(p.get_text() for p in list(doc)[-plan['collision_pages']:])
+    lookup={t['id']:t for t in d['templates']}
+    for collision in d['thickness_check']['collisions']:
+        assert collision['id'] in reference
+        assert len(collision['panels'])==2
+        for panel in collision['panels']:
+            assert panel['instance_id'] in reference
+            template=lookup[panel['template_id']]
+            instance=next(i for i in template['instances'] if i['id']==panel['instance_id'])
+            assert panel['corner_labels']==[f'V{i+1}' for i,v in enumerate(instance['vertex_ids']) if v in collision['shared_vertices']]
+            assert any(collision['id'] in region['collision_ids'] and instance['id'] in region['instance_ids'] for region in template['collision_regions'])
+    for page,sheet in zip(list(doc)[1:],plan['template_pages']):
+        template=lookup[sheet['template_id']]
+        if template['collision_regions']:
+            assert 'OVERLAP' in page.get_text()
+            assert b'pattern' in svg_bytes(d,template['id'])
+    for page in doc:
+        for word in page.get_text('words'):
+            assert 0<=word[0]<=word[2]<=page.rect.width+.1
+            assert 0<=word[1]<=word[3]<=page.rect.height+.1
+
+
+def test_overlap_volumes_are_real_and_template_projection_is_rigid_invariant():
+    d=make_design(Parameters(face_transforms={'F003':{'mode':'inward','offset_mm':12}}))
+    vertices=np.array(d['vertices'])
+    mesh=analyze_mesh(vertices,d['faces'])
+    edge_lookup={tuple(e['vertices']):e for e in mesh['edges']}
+    cells=[]
+    for face,normal in zip(mesh['faces'],mesh['normals']):
+        deltas=[edge_lookup[tuple(sorted((a,b)))]['dihedral_deg'] for a,b in zip(face,face[1:]+face[:1])]
+        cells.append(slab_cell(vertices[face],normal,deltas,6))
+    for collision in d['thickness_check']['collisions']:
+        region=np.array(collision['region_mm'])
+        for fi in collision['faces']:
+            planes=cells[fi]['planes']
+            assert np.max(region@planes[:,:3].T+planes[:,3])<1e-5
+    rotation=np.array([[cos(.7),0,-sin(.7)],[0,1,0],[sin(.7),0,cos(.7)]])
+    translation=np.array([17,-31,24])
+    transformed=analyze_mesh(vertices@rotation.T+translation,d['faces'])
+    collisions=deepcopy(d['thickness_check']['collisions'])
+    for collision in collisions:
+        collision['region_mm']=(np.array(collision['region_mm'])@rotation.T+translation).tolist()
+    templates=deepcopy(d['templates'])
+    collision_annotations(transformed,templates,collisions)
+    for before,after in zip(d['templates'],templates):
+        assert before['collision_warnings']==after['collision_warnings']
+        for a,b in zip(before['collision_regions'],after['collision_regions']):
+            assert np.array(a['polygon_mm'])==pytest.approx(np.array(b['polygon_mm']))
+        labels=edge_annotations(before,2);labels+=center_annotations(before,labels)
+        assert {l['text'] for l in collision_vertex_annotations(before,labels)}=={f'V{i+1}' for i in before['collision_vertices']}
 
 
 def test_rigid_transform_and_scale_invariance_of_signed_mesh():

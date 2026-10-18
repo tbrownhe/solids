@@ -86,6 +86,7 @@ def slab_cell(points, normal, deltas, thickness):
             direction = world[b]-world[a]; direction /= np.linalg.norm(direction)
             directions.append(direction)
     return {"vertices":world,"normals":normals,"directions":np.array(directions),
+            "planes":np.unique(np.round(hull.equations,10),axis=0),
             "low":world.min(axis=0),"high":world.max(axis=0)}
 
 
@@ -102,6 +103,22 @@ def cells_overlap(a,b,eps):
     return bool(np.all(overlap > eps))
 
 
+def intersection_vertices(a, b, eps):
+    """Vertices of the intersection of two bounded convex miter solids.
+
+    Enumerating triples of supporting planes also finds overlaps containing no
+    original cell vertices. SAT has already established positive penetration.
+    """
+    planes=np.concatenate((a["planes"],b["planes"]))
+    ids=np.array(list(combinations(range(len(planes)),3)))
+    triples=planes[ids]
+    keep=np.abs(np.linalg.det(triples[:,:,:3]))>1e-10
+    triples=triples[keep]
+    candidates=np.linalg.solve(triples[:,:,:3],-triples[:,:,3,None])[:,:,0]
+    inside=np.all(candidates @ planes[:,:3].T + planes[:,3] <= eps,axis=1)
+    return np.unique(np.round(candidates[inside],8),axis=0)
+
+
 def check_thick_shell(mesh, thickness, face_ids):
     lookup = {tuple(e["vertices"]):e for e in mesh["edges"]}
     cells=[]
@@ -109,10 +126,18 @@ def check_thick_shell(mesh, thickness, face_ids):
         deltas=[lookup[tuple(sorted((a,b)))]["dihedral_deg"] for a,b in zip(face,face[1:]+face[:1])]
         cells.append(slab_cell(mesh["vertices"][face],normal,deltas,thickness))
     eps=max(float(np.linalg.norm(np.ptp(mesh["vertices"],axis=0)))*1e-7,1e-6)
+    collisions=[]
     for i,a in enumerate(cells):
         for j in range(i+1,len(cells)):
             b=cells[j]
             if np.all(a["high"]>b["low"]+eps) and np.all(b["high"]>a["low"]+eps):
                 if cells_overlap(a,b,eps):
-                    raise ValueError(f"Thick clay panels {face_ids[i]} and {face_ids[j]} overlap. Reduce thickness/depth; some multi-face corners require a separate corner-relief design.")
-    return {"status":"passed","panel_count":len(cells),"method":"convex miter solids / separating-axis test"}
+                    region=intersection_vertices(a,b,eps)
+                    if len(region)<4:
+                        raise ValueError("The thick-panel overlap could not be located reliably. Adjust thickness or face offset.")
+                    collisions.append({"id":f"C{len(collisions)+1:03d}","faces":[i,j],
+                                       "face_ids":[face_ids[i],face_ids[j]],
+                                       "shared_vertices":sorted(set(mesh["faces"][i]) & set(mesh["faces"][j])),
+                                       "region_mm":region.tolist()})
+    return {"status":"overlap" if collisions else "passed","panel_count":len(cells),
+            "collisions":collisions,"method":"convex miter solids / separating-axis test"}
