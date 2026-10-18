@@ -33,3 +33,34 @@ def test_unbuildable_panel_still_previews_with_export_disabled():
     response = client.post("/api/design", json={"solid_id": "cube", "edge_length_mm": 10, "thickness_mm": 6})
     assert response.status_code == 200
     assert "consume" in response.json()["export_error"]
+
+
+def test_phase2_catalog_presets_and_export_workflow():
+    assert len(client.get('/api/presets').json())==7
+    data={"solid_id":"cube","preset_id":"excavated-cube-single","apex_offset_mm":20}
+    response=client.post('/api/design',json=data)
+    assert response.status_code==200
+    design=response.json()
+    assert design['geometry_version']==2 and design['phase2']
+    assert design['total_faces']==9 and design['layout']['assembly_pages']==1
+    assert design['export_error'] is None
+    assert any(e['cut_side']=='exterior' for e in design['edges'])
+    assert client.post('/api/export/pdf',json=data).status_code==200
+    svg=client.post('/api/export/svg/A',json=data)
+    assert svg.status_code==200 and b'CALIBRATION PLAN' in svg.content and b'OUT' in svg.content
+    coupon=client.post('/api/export/calibration',json=data)
+    assert coupon.status_code==200 and coupon.content.startswith(b'%PDF')
+    # Legacy saved parameter objects remain valid without Phase 2 fields.
+    assert client.post('/api/design',json={'solid_id':'cube','edge_length_mm':120}).json()['phase2'] is False
+
+
+def test_phase2_invalid_offsets_and_thick_intersections_block_export():
+    too_deep={'solid_id':'cube','preset_id':'excavated-cube','apex_offset_mm':61}
+    assert client.post('/api/design',json=too_deep).status_code==422
+    invalid_face={'solid_id':'cube','face_transforms':{'F999':{'mode':'inward','offset_mm':8}}}
+    assert client.post('/api/design',json=invalid_face).status_code==422
+    overlap={'face_transforms':{'F009':{'mode':'inward','offset_mm':12}}}
+    preview=client.post('/api/design',json=overlap)
+    assert preview.status_code==200
+    assert 'overlap' in preview.json()['export_error']
+    assert client.post('/api/export/pdf',json=overlap).status_code==422

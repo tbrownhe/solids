@@ -1,4 +1,4 @@
-"""Validated convex polygon topology, symmetric inward miters, and panel grouping.
+"""Validated polygon topology, signed symmetric miters, and panel grouping.
 
 Flat coordinates are millimetres of the full exterior footprint, viewed with
 the INTERIOR UP and EXTERIOR DOWN for cutting and beveling. Mesh winding is
@@ -6,20 +6,30 @@ outward. Grouping uses exterior patterns and rotations only; each grouped panel
 is then viewed from its interior, reversing its displayed edge order exactly
 once. This viewing reflection does not merge handed patterns or reflect the solid.
 """
-from collections import defaultdict, deque
 from functools import lru_cache
-from math import acos, degrees, tan, radians
 from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from .registry import get_solid
+from .mesh import analyze_mesh
+from .transforms import transform_mesh
+from .fabrication import signed_inset, offset_polygon, check_thick_shell
+
+
+class FaceTransform(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    mode: Literal["flat", "inward", "outward"] = "flat"
+    offset_mm: float = Field(default=0, ge=0, le=2000)
 
 
 class Parameters(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
     solid_id: str = "rhombicuboctahedron"
+    preset_id: str | None = None
+    apex_offset_mm: float = Field(default=20, ge=0, le=2000)
+    face_transforms: dict[str, FaceTransform] = Field(default_factory=dict, max_length=120)
     edge_length_mm: float = Field(default=120, gt=0, le=2000)
     thickness_mm: float = Field(default=6, gt=0, le=100)
     shrinkage_percent: float = Field(default=0, ge=0, lt=100)
@@ -38,62 +48,15 @@ def _unit(v):
 def topology(solid_id: str) -> dict:
     source = get_solid(solid_id)
     vertices = np.asarray(source["vertices"], dtype=float)
-    if not np.isfinite(vertices).all() or vertices.ndim != 2 or vertices.shape[1] != 3:
-        raise ValueError("Invalid source vertices.")
     vertices = vertices - vertices.mean(axis=0)
-    faces, normals = [], []
-    adjacency = defaultdict(list)
-    for raw_face in source["faces"]:
-        face = list(raw_face)
-        if len(face) < 3 or len(set(face)) != len(face):
-            raise ValueError("Invalid polygon face.")
-        points = vertices[face]
-        normal = _unit(np.cross(points[1] - points[0], points[2] - points[0]))
-        if np.dot(normal, points.mean(axis=0)) < 0:
-            face.reverse()
-            points = vertices[face]
-            normal = -normal
-        if np.max(np.abs((points - points[0]) @ normal)) > 1e-6:
-            raise ValueError("Source mesh has a non-planar face.")
-        if np.max((vertices - points[0]) @ normal) > 1e-6:
-            raise ValueError("Only convex meshes are supported.")
-        fi = len(faces)
-        for a, b in zip(face, face[1:] + face[:1]):
-            adjacency[tuple(sorted((a, b)))].append((fi, a, b))
-        faces.append(face)
-        normals.append(normal)
-    if any(len(incidents) != 2 for incidents in adjacency.values()):
-        raise ValueError("Mesh is not closed: every edge must have exactly two faces.")
-    if len(vertices) - len(adjacency) + len(faces) != 2:
-        raise ValueError("Mesh fails the Euler characteristic check.")
-    graph = defaultdict(set)
-    edges = []
-    for (a, b), incidents in sorted(adjacency.items()):
-        (f1, a1, b1), (f2, a2, b2) = incidents
-        if a1 != b2 or b1 != a2:
-            raise ValueError("Mesh faces have inconsistent orientation.")
-        graph[f1].add(f2)
-        graph[f2].add(f1)
-        alpha = degrees(acos(float(np.clip(np.dot(normals[f1], normals[f2]), -1, 1))))
-        if not 0 < alpha < 180:
-            raise ValueError("Coplanar or degenerate source face adjacency.")
-        edges.append({"vertices": [a, b], "faces": [f1, f2],
-                      "angle_deg": (180 - alpha) / 2, "dihedral_deg": 180 - alpha,
-                      "adjacent_sides": sorted([len(faces[f1]), len(faces[f2])])})
-    visited, queue = {0}, deque([0])
-    while queue:
-        for neighbor in graph[queue.popleft()] - visited:
-            visited.add(neighbor)
-            queue.append(neighbor)
-    if len(visited) != len(faces):
-        raise ValueError("Source mesh has disconnected components.")
-    lengths = [float(np.linalg.norm(vertices[a] - vertices[b])) for a, b in adjacency]
+    mesh = analyze_mesh(vertices, source["faces"], intersections=False)
+    lengths = [edge["length_mm"] for edge in mesh["edges"]]
     edge_length = float(np.mean(lengths))
-    if max(lengths) - min(lengths) > edge_length * 1e-6:
-        raise ValueError("Source mesh does not have uniform exterior edges.")
-    vertices /= edge_length
-    return {"source": source, "vertices": vertices, "faces": faces,
-            "normals": normals, "edges": edges}
+    if max(lengths)-min(lengths) > edge_length*1e-6:
+        raise ValueError("Base solid does not have uniform reference edges.")
+    mesh["vertices"] /= edge_length
+    mesh["source"] = source
+    return mesh
 
 
 def inset_polygon(polygon, insets):
@@ -125,16 +88,28 @@ def inset_polygon(polygon, insets):
 
 
 def make_design(parameters: Parameters) -> dict:
-    mesh = topology(parameters.solid_id)
+    base = topology(parameters.solid_id)
     cut_edge = parameters.edge_length_mm / (1 - parameters.shrinkage_percent / 100)
     if cut_edge > 5000:
         raise ValueError("Shrinkage compensation exceeds the 5,000 mm working-edge limit.")
-    vertices = mesh["vertices"] * cut_edge
+    construction = transform_mesh(base, parameters, cut_edge)
+    phase2 = construction["active"]
+    records = construction["face_records"]
+    vertices = construction["vertices"]
+    if phase2:
+        mesh = analyze_mesh(vertices, construction["faces"], face_ids=[f["id"] for f in records])
+    else:
+        mesh = {**base, "vertices": vertices}
+    mesh["source"] = base["source"]
     edges = [dict(edge) for edge in mesh["edges"]]
-    edge_lookup = {tuple(edge["vertices"]): edge for edge in edges}
-    types = sorted({(tuple(e["adjacent_sides"]), round(e["angle_deg"], 8)) for e in edges})
     for edge in edges:
-        edge["category"] = types.index((tuple(edge["adjacent_sides"]), round(edge["angle_deg"], 8)))
+        a,b = edge["vertices"]
+        edge["length_mm"] = float(np.linalg.norm(vertices[b]-vertices[a]))
+        edge["face_ids"] = [records[i]["id"] for i in edge["faces"]]
+    edge_lookup = {tuple(edge["vertices"]): edge for edge in edges}
+    types = sorted({(tuple(e["adjacent_sides"]), round(e["angle_deg"], 8), e["edge_kind"], e["cut_side"]) for e in edges})
+    for edge in edges:
+        edge["category"] = types.index((tuple(edge["adjacent_sides"]), round(edge["angle_deg"], 8), edge["edge_kind"], edge["cut_side"]))
     groups = {}
     for fi, raw_face in enumerate(mesh["faces"]):
         sequence = []
@@ -147,14 +122,19 @@ def make_design(parameters: Parameters) -> dict:
             turn = float(np.dot(_unit(vertices[b] - vertices[a]), _unit(vertices[c] - vertices[b])))
             neighbor = next(f for f in edge["faces"] if f != fi)
             sequence.append((round(length / cut_edge, 8), round(turn, 8),
-                             round(edge["angle_deg"], 8), len(mesh["faces"][neighbor])))
+                             round(edge["angle_deg"], 8), len(mesh["faces"][neighbor]), edge["cut_side"]))
         start = min(range(len(sequence)), key=lambda i: tuple(sequence[i:] + sequence[:i]))
         key = tuple(sequence[start:] + sequence[:start])
+        face = raw_face[start:] + raw_face[:start]
+        interior_edge_order = [0] + list(range(len(face)-1,0,-1))
+        joints = [edge_lookup[tuple(sorted((a,b)))]["id"] for a,b in zip(face,face[1:]+face[:1])]
+        instance = {**records[fi], "face_index":fi,
+                    "edges":[{"label":f"E{i+1}","joint_id":joints[j]} for i,j in enumerate(interior_edge_order)]}
         if key in groups:
             groups[key]["quantity"] += 1
             groups[key]["face_ids"].append(fi)
+            groups[key]["instances"].append(instance)
             continue
-        face = raw_face[start:] + raw_face[:start]
         points = vertices[face]
         u = _unit(points[1] - points[0])
         v = np.cross(mesh["normals"][fi], u)
@@ -170,7 +150,11 @@ def make_design(parameters: Parameters) -> dict:
                                 "adjacent_sides": len(mesh["faces"][neighbor]),
                                 "length_mm": float(np.linalg.norm(points[(i + 1) % len(face)] - points[i])),
                                 "category": edge["category"],
-                                "inset_mm": parameters.thickness_mm / tan(radians(edge["angle_deg"]))})
+                                "cut_side": edge["cut_side"], "edge_kind": edge["edge_kind"],
+                                "signed_fold_deg": edge["signed_fold_deg"],
+                                "signed_inset_mm": signed_inset(edge["dihedral_deg"], parameters.thickness_mm),
+                                "exterior_offset_mm": max(0, -signed_inset(edge["dihedral_deg"], parameters.thickness_mm)),
+                                "inset_mm": max(0, signed_inset(edge["dihedral_deg"], parameters.thickness_mm))})
         # View the opposite side of the exterior-oriented face. Reverse the
         # loop too, so clipping and labels still receive a CCW polygon. Keep
         # the first edge first; its neighbors now run in the reverse order.
@@ -181,14 +165,36 @@ def make_design(parameters: Parameters) -> dict:
         panel_edges = [panel_edges[i] for i in edge_order]
         for i, edge in enumerate(panel_edges):
             edge["label"] = f"E{i + 1}"
-        interior = inset_polygon(xy.tolist(), [e["inset_mm"] for e in panel_edges])
-        groups[key] = {"quantity": 1, "sides": len(face), "polygon_mm": xy.tolist(),
-                       "view": "interior-up", "edges": panel_edges,
+        reference = xy.tolist()
+        if phase2:
+            interior = offset_polygon(reference, [e["signed_inset_mm"] for e in panel_edges])
+            blank = offset_polygon(reference, [min(0,e["signed_inset_mm"]) for e in panel_edges])
+            if not blank:
+                raise ValueError("An extended blank loses an edge. Reduce slab thickness or face offset.")
+            shift = -np.array(blank).min(axis=0)
+            reference = (np.array(reference)+shift).tolist()
+            blank = (np.array(blank)+shift).tolist()
+            interior = (np.array(interior)+shift).tolist() if interior else []
+        else:
+            blank = reference
+            interior = inset_polygon(reference, [e["inset_mm"] for e in panel_edges])
+        for i,edge in enumerate(panel_edges):
+            edge["blank_length_mm"] = float(np.linalg.norm(np.array(blank[(i+1)%len(blank)])-blank[i]))
+        groups[key] = {"quantity": 1, "sides": len(face), "polygon_mm": blank,
+                       "reference_polygon_mm": reference, "phase2":phase2,
+                       "view": "interior-up", "edges": panel_edges, "instances":[instance],
                        "inset_polygon_mm": interior, "face_ids": [fi],
                        "warnings": [] if interior else ["Bevels consume the interior face. Reduce slab thickness or increase edge length."]}
     templates = sorted(groups.values(), key=lambda t: (t["sides"], tuple(round(e["angle_deg"], 8) for e in t["edges"])))
     for i, template in enumerate(templates):
-        template["id"] = chr(65 + i)
+        number=i+1
+        label=""
+        while number:
+            number,remainder=divmod(number-1,26)
+            label=chr(65+remainder)+label
+        template["id"] = label
+        for instance in template["instances"]:
+            instance["template_id"] = template["id"]
     if sum(t["quantity"] for t in templates) != len(mesh["faces"]):
         raise ValueError("Panel multiplicities do not match the source mesh.")
     warnings = [f"Template {t['id']}: {w}" for t in templates for w in t["warnings"]]
@@ -196,10 +202,24 @@ def make_design(parameters: Parameters) -> dict:
         warnings.append("Small panels may not have room for legible printed bevel labels.")
     if mesh["source"].get("chirality"):
         warnings.append("Chiral solid: preserve the displayed handedness. Templates are grouped by rotation only; do not mirror them.")
-    return {"parameters": parameters.model_dump(), "name": mesh["source"]["name"],
+    fabrication_error = None
+    thickness_check = None
+    if phase2:
+        try:
+            thickness_check = check_thick_shell(mesh, parameters.thickness_mm, [f["id"] for f in records])
+        except ValueError as error:
+            fabrication_error = str(error)
+            warnings.append(fabrication_error)
+        warnings.append("Experimental fabrication plan: signed miter offsets are calculated, but a convex/reflex scrap-joint dry-fit is required before making the full shell.")
+    name = construction["preset"]["name"] if phase2 and construction["preset"] else mesh["source"]["name"] + (" · modified faces" if phase2 else "")
+    return {"parameters": parameters.model_dump(), "name": name,
+            "geometry_version":2, "phase2":phase2, "base_faces":construction["base_faces"],
+            "face_records":records, "thickness_check":thickness_check,
+            "fabrication_error":fabrication_error,
             "chirality": mesh["source"].get("chirality"), "cut_edge_mm": cut_edge,
             "total_faces": len(mesh["faces"]), "total_edges": len(edges),
             "vertices": vertices.tolist(), "faces": mesh["faces"], "edges": edges,
             "edge_types": [{"id": i, "adjacent_sides": list(sides), "angle_deg": angle,
-                            "dihedral_deg": angle * 2} for i, (sides, angle) in enumerate(types)],
+                            "dihedral_deg": 360-angle*2 if kind=="concave" else angle*2,
+                            "edge_kind":kind,"cut_side":side} for i, (sides, angle, kind, side) in enumerate(types)],
             "templates": templates, "warnings": warnings}

@@ -4,8 +4,9 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 
 from .geometry import Parameters, make_design
-from .printing import center_annotations, edge_annotations, page_plan, pdf_bytes, svg_bytes
+from .printing import center_annotations, edge_annotations, page_plan, pdf_bytes, svg_bytes, calibration_pdf_bytes
 from .registry import list_solids
+from .transforms import PRESETS, SUPPORTED_BASES
 
 app = FastAPI(title="Solids Studio", version="0.1.0")
 
@@ -24,7 +25,12 @@ def health():
 
 @app.get("/api/solids")
 def catalog():
-    return list_solids()
+    return [{**solid,"transform_supported":solid["id"] in SUPPORTED_BASES} for solid in list_solids()]
+
+
+@app.get("/api/presets")
+def presets():
+    return PRESETS
 
 
 @app.post("/api/design")
@@ -38,12 +44,15 @@ def design(parameters: Parameters):
     for template in result["templates"]:
         try:
             template["annotations"] = edge_annotations(template, parameters.angle_precision)
-            center_annotations(template, template["annotations"])
+            template["center_annotations"] = center_annotations(template, template["annotations"])
         except ValueError as error:
             template["annotations"] = []
+            template["center_annotations"] = []
             result["export_error"] = str(error)
     if any(not template["inset_polygon_mm"] for template in result["templates"]):
         result["export_error"] = "Bevels consume an interior face. Reduce slab thickness or increase edge length."
+    if result.get("fabrication_error"):
+        result["export_error"] = result["fabrication_error"]
     return result
 
 
@@ -71,6 +80,16 @@ def export_svg(template_id: str, parameters: Parameters):
         "Content-Disposition": f'attachment; filename="{parameters.solid_id}-{template_id}.svg"',
         "Cache-Control": "no-store",
     })
+
+
+@app.post("/api/export/calibration")
+def export_calibration(parameters: Parameters):
+    try:
+        output=calibration_pdf_bytes(parameters)
+    except ValueError as error:
+        raise HTTPException(status_code=422,detail=str(error)) from error
+    return Response(output,media_type="application/pdf",headers={
+        "Content-Disposition":'attachment; filename="convex-reflex-calibration.pdf"',"Cache-Control":"no-store"})
 
 
 frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"

@@ -4,14 +4,15 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Design } from './types'
 import { COLORS } from './types'
 
-export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
-  design: Design; selected: string | null; resetKey: number
+export function SolidView({ design, selected, selectedFaceId, resetKey, onFace, onEdge }: {
+  design: Design; selected: string | null; selectedFaceId: string | null; resetKey: number
   onFace: (face: number) => void; onEdge: (edge: number) => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const [failed, setFailed] = useState(false)
   const cameraPosition = useRef<[number, number, number]>([3.6, 2.7, 4.4])
   const lastResetKey = useRef(resetKey)
+  const lastRecipe = useRef('')
   const callbacks = useRef({ onFace, onEdge })
   callbacks.current = { onFace, onEdge }
   useEffect(() => {
@@ -29,10 +30,27 @@ export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
     renderer.domElement.setAttribute('role', 'img')
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100)
-    if (lastResetKey.current !== resetKey) {
-      cameraPosition.current = [3.6, 2.7, 4.4]
-      lastResetKey.current = resetKey
+    const recipe = `${design.parameters.solid_id}:${design.parameters.preset_id ?? ''}`
+    const reset = lastResetKey.current !== resetKey
+    if (reset || (lastRecipe.current !== recipe && design.parameters.preset_id === 'excavated-cube-single')) {
+      let position = new THREE.Vector3(3.6, 2.7, 4.4)
+      // Look into the excavated source face when opening the one-face recipe.
+      // The first two fan edges retain the original face's outward winding.
+      if (design.parameters.preset_id === 'excavated-cube-single' && design.phase2) {
+        const fan = design.face_records.flatMap((r, i) => r.source_face_id === 'F001' ? [design.faces[i]] : [])
+        if (fan.length >= 2) {
+          const point = (i: number) => new THREE.Vector3(...design.vertices[i] as [number, number, number])
+          const a = point(fan[0][0]), b = point(fan[0][1]), c = point(fan[1][1])
+          const along = b.sub(a).normalize()
+          const normal = new THREE.Vector3().crossVectors(along, c.sub(a)).normalize()
+          const across = new THREE.Vector3().crossVectors(normal, along).normalize()
+          position = normal.multiplyScalar(4.8).addScaledVector(along, 2.3).addScaledVector(across, 1.7)
+        }
+      }
+      cameraPosition.current = position.toArray() as [number, number, number]
     }
+    lastResetKey.current = resetKey
+    lastRecipe.current = recipe
     camera.position.set(...cameraPosition.current)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
@@ -44,6 +62,7 @@ export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
     scene.add(new THREE.AmbientLight(0xffffff, 2.1))
     const light = new THREE.DirectionalLight(0xffffff, 3.2)
     light.position.set(3, 5, 4)
+    if (design.phase2) light.position.copy(camera.position).add(new THREE.Vector3(0, 3, 0))
     scene.add(light)
     const fill = new THREE.DirectionalLight(0xcdd6bf, 1.2)
     fill.position.set(-4, 0, -2)
@@ -56,7 +75,7 @@ export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
     const pickFaces: THREE.Mesh[] = []
     const pickEdges: THREE.Line[] = []
     const faceColors: Record<number, string> = { 3: '#be825f', 4: '#c9c9b4', 5: '#bfbd91', 6: '#aabcae', 8: '#b5c2c2', 10: '#c3b4a3' }
-    const selectedFaces = new Set(design.templates.find(t => t.id === selected)?.face_ids ?? [])
+    const selectedFaces = new Set(selectedFaceId ? design.face_records.flatMap((r,i) => r.source_face_id===selectedFaceId ? [i] : []) : design.templates.find(t => t.id === selected)?.face_ids ?? [])
     design.faces.forEach((face, fi) => {
       const positions: number[] = []
       for (let i = 1; i < face.length - 1; i++) {
@@ -74,7 +93,9 @@ export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
     })
     design.edges.forEach((edge, ei) => {
       const geometry = new THREE.BufferGeometry().setFromPoints(edge.vertices.map(vi => points[vi]))
-      const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: COLORS[edge.category % COLORS.length], linewidth: 2 }))
+      const material = edge.edge_kind==='concave' ? new THREE.LineDashedMaterial({color:COLORS[edge.category%COLORS.length],dashSize:.06,gapSize:.025}) : new THREE.LineBasicMaterial({ color: COLORS[edge.category % COLORS.length], linewidth: 2 })
+      const line = new THREE.Line(geometry, material)
+      line.computeLineDistances()
       line.userData.edgeIndex = ei
       group.add(line)
       pickEdges.push(line)
@@ -94,6 +115,18 @@ export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
     }
     renderer.domElement.addEventListener('pointerdown', down)
     renderer.domElement.addEventListener('pointerup', up)
+    const hover = (e: PointerEvent) => {
+      if (e.buttons) return
+      const rect=renderer.domElement.getBoundingClientRect()
+      raycaster.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera)
+      const face=raycaster.intersectObjects(pickFaces)[0]
+      const edge=raycaster.intersectObjects(pickEdges)[0]
+      if (edge && (!face || edge.distance < face.distance+.05)) {
+        const data=design.edges[edge.object.userData.edgeIndex]
+        renderer.domElement.title=`${data.id}: ${data.angle_deg.toFixed(design.parameters.angle_precision)}° · ${data.cut_side.toUpperCase()} UP · ${data.edge_kind} · ${data.face_ids.join(' ↔ ')}`
+      } else renderer.domElement.title=face ? design.face_records[face.object.userData.faceIndex].id : ''
+    }
+    renderer.domElement.addEventListener('pointermove',hover)
     const resize = new ResizeObserver(() => {
       const { width, height } = element.getBoundingClientRect()
       if (!width || !height) return
@@ -112,6 +145,7 @@ export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
       controls.dispose()
       renderer.domElement.removeEventListener('pointerdown', down)
       renderer.domElement.removeEventListener('pointerup', up)
+      renderer.domElement.removeEventListener('pointermove',hover)
       scene.traverse(object => {
         if (object instanceof THREE.Mesh || object instanceof THREE.Line) {
           object.geometry.dispose()
@@ -122,6 +156,6 @@ export function SolidView({ design, selected, resetKey, onFace, onEdge }: {
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [design, selected, resetKey])
+  }, [design, selected, selectedFaceId, resetKey])
   return <div ref={host} className="solid-canvas">{failed && <div className="webgl-message">3D needs WebGL in this browser. Your panel previews and exports are still available.</div>}</div>
 }
