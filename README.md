@@ -3,7 +3,9 @@
 A ceramic slab template generator with all 13 Archimedean and five Platonic
 solids, plus experimental recessed and outward-pyramid construction recipes.
 Inspect the joints in 3D and export reusable, actual-size vector panels.
-No accounts, database, external runtime requests, or persistent server state.
+No accounts or third-party browser requests. Anonymous export aggregates live in
+a small local SQLite database; an optional daily reporter combines them with
+Cloudflare traffic estimates.
 
 ## Run locally with Docker Desktop
 
@@ -22,8 +24,9 @@ docker compose logs --tail=50 studio
 docker compose down
 ```
 
-One non-root, read-only container serves the React build and FastAPI on a single
-origin. Exports are generated in memory; no volumes or secrets are needed.
+One non-root container with a read-only root serves the React build and FastAPI
+on a single origin. Exports are generated in memory. A small writable `usage-data`
+volume preserves anonymous hourly export counts; the app needs no secrets.
 Dependencies are locked in `uv.lock` and `frontend/package-lock.json`.
 
 The designer keeps shape and clay settings beside the model, with assembled fired
@@ -287,6 +290,9 @@ solid contact/overlap, all seven presets, variable edge lengths, stable face and
 joint IDs, shrinkage, surface rejection, thickness rejection, assembly references,
 calibration coupons, frozen original template vectors, deterministic PDF exports,
 and assembly-view visibility checked against independent 3D ray intersections.
+Usage/reporting checks cover canonical setup grouping, hourly persistence,
+concurrent counters and delivery claims, DST boundaries, export failures, privacy
+fields, mocked Cloudflare/SMTP, dry runs and download resilience to storage errors.
 
 With the Docker app running, browser QA can use a disposable container. First
 install frontend dependencies with `npm ci` in `frontend`, then run from the
@@ -358,8 +364,19 @@ shared Traefik network. Do not start the local `compose.yaml` on the server.
 
 Inspect application logs with
 `docker compose -f compose.production.yaml logs --tail=100 studio`.
-The app has no persistent server-side user data; project files and browser
-preferences remain on the user's device.
+Anonymous export counts and normalized design settings persist in the usage
+volume. Project files and browser preferences remain on the user's device.
+
+## Anonymous usage and daily email
+
+See [docs/REPORTING.md](docs/REPORTING.md) for the data collected, privacy boundary,
+Docker storage, credentials, dry-run previews, backups and the optional Pacific-time
+systemd timer. Only export endpoints are counted; previews are not. PDF sets,
+individual SVGs and coupons remain separate, with day/week rankings and hourly
+activity. Analytics storage failures do not block downloads. Neither app startup
+nor default Compose startup sends email. The reporter runs only when explicitly
+invoked or scheduled; it uses Cloudflare and SMTP credentials mounted separately
+from the app.
 
 ## Search and sharing
 

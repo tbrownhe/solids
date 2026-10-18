@@ -5,6 +5,11 @@ node_modules/
 frontend/dist/
 artifacts/
 .env
+.usage/
+secrets/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 *.egg-info/
 *.tsbuildinfo
 .DS_Store

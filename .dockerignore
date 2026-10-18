@@ -9,6 +9,9 @@ artifacts
 tests
 *.pdf
 .env
+.usage
+secrets
+*.sqlite3*
 __pycache__
 **/__pycache__
 **/*.tsbuildinfo

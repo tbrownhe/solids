@@ -23,6 +23,14 @@ services:
       - traefik.http.routers.solids-http.middlewares=https-redirect@docker
       - traefik.http.routers.solids-http.service=solids
 
+  reporter:
+    extends:
+      file: compose.yaml
+      service: reporter
+
+volumes:
+  usage-data:
+
 networks:
   traefik-public:
     external: true

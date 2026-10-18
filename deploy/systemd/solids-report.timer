@@ -1,0 +1,11 @@
+[Unit]
+Description=Email the Solids usage digest each Pacific morning
+
+[Timer]
+OnCalendar=*-*-* 08:15:00 America/Los_Angeles
+RandomizedDelaySec=10m
+Persistent=true
+Unit=solids-report.service
+
+[Install]
+WantedBy=timers.target

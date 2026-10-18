@@ -17,6 +17,7 @@ ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app/backend PYTHONDONTWRITEBYTECODE=
 COPY --from=python-deps /app/.venv /app/.venv
 COPY backend/ backend/
 COPY --from=frontend /build/frontend/dist frontend/dist/
+RUN mkdir -p /var/lib/solids && chown 65532:65532 /var/lib/solids && chmod 0700 /var/lib/solids
 USER 65532:65532
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]

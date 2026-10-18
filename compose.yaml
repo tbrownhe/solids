@@ -1,6 +1,11 @@
 services:
   studio:
     build: .
+    image: ${SOLIDS_IMAGE:-solids-studio:local}
+    environment:
+      SOLIDS_USAGE_DATA_DIR: /var/lib/solids
+    volumes:
+      - usage-data:/var/lib/solids
     ports:
       - "127.0.0.1:8081:8000"
     restart: unless-stopped
@@ -18,3 +23,40 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  reporter:
+    profiles: [reporting]
+    build: .
+    image: ${SOLIDS_IMAGE:-solids-studio:local}
+    entrypoint: [python, -m, solids.reporting]
+    command: []
+    environment:
+      SOLIDS_USAGE_DATA_DIR: /var/lib/solids
+      SOLIDS_REPORT_TIMEZONE: ${SOLIDS_REPORT_TIMEZONE:-America/Los_Angeles}
+      SOLIDS_REPORT_HOSTNAME: ${SOLIDS_REPORT_HOSTNAME:-solids.tobiasbrownheft.xyz}
+      SOLIDS_CLOUDFLARE_ZONE_ID: ${SOLIDS_CLOUDFLARE_ZONE_ID:-}
+      SOLIDS_REPORT_TO: ${SOLIDS_REPORT_TO:-}
+      SOLIDS_REPORT_FROM: ${SOLIDS_REPORT_FROM:-}
+      SOLIDS_SMTP_HOST: ${SOLIDS_SMTP_HOST:-}
+      SOLIDS_SMTP_PORT: ${SOLIDS_SMTP_PORT:-587}
+      SOLIDS_SMTP_SECURITY: ${SOLIDS_SMTP_SECURITY:-starttls}
+      SOLIDS_SMTP_USER: ${SOLIDS_SMTP_USER:-}
+    volumes:
+      - usage-data:/var/lib/solids
+      - ${SOLIDS_REPORT_SECRETS_DIR:-./secrets/reporting}:/run/secrets/solids-reporting:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      disable: true
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 32
+    restart: "no"
+
+volumes:
+  usage-data:

@@ -1,0 +1,11 @@
+[Unit]
+Description=Solids anonymous daily usage report
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/solids
+ExecStart=/usr/bin/docker compose -f compose.production.yaml --profile reporting run --rm --no-deps reporter
+TimeoutStartSec=180
