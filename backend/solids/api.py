@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 
 from .geometry import Parameters, make_design
 from .printing import center_annotations, edge_annotations, page_plan, pdf_bytes, svg_bytes, calibration_pdf_bytes
@@ -92,6 +93,27 @@ def export_calibration(parameters: Parameters):
         "Content-Disposition":'attachment; filename="convex-reflex-calibration.pdf"',"Cache-Control":"no-store"})
 
 
+@app.get("/guide/slab-polyhedra", include_in_schema=False)
+def guide_canonical():
+    return RedirectResponse("/guide/slab-polyhedra/", status_code=308)
+
+
 frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+class StudioFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            if path.startswith("assets/"):
+                # Vite fingerprints every file in this directory.
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif response.headers.get("content-type", "").startswith("text/html") or path in {"robots.txt", "sitemap.xml"}:
+                response.headers["Cache-Control"] = "no-cache"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
+
+
 if frontend.is_dir():
-    app.mount("/", StaticFiles(directory=frontend, html=True), name="studio")
+    app.mount("/", StudioFiles(directory=frontend, html=True), name="studio")

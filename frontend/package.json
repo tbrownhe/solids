@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/prerender.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "test:browser": "node tests/smoke.mjs",
-    "test:phase2": "node tests/phase2.mjs"
+    "test:phase2": "node tests/phase2.mjs",
+    "test:seo": "node tests/seo.mjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.3.0",

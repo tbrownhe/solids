@@ -5,6 +5,12 @@ from solids.api import app
 client = TestClient(app)
 
 
+def test_guide_short_url_redirects_permanently_to_canonical_directory():
+    response=client.get('/guide/slab-polyhedra',follow_redirects=False)
+    assert response.status_code==308
+    assert response.headers['location']=='/guide/slab-polyhedra/'
+
+
 def test_complete_design_to_pdf_and_svg_workflow():
     assert client.get("/api/health").json() == {"status": "ok"}
     assert len(client.get("/api/solids").json()) == 18

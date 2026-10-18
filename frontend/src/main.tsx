@@ -1,11 +1,15 @@
-import { StrictMode, useEffect, useRef, useState } from 'react'
-import { createRoot } from 'react-dom/client'
+import { lazy, StrictMode, Suspense, useEffect, useRef, useState } from 'react'
+import { createRoot, hydrateRoot } from 'react-dom/client'
 import { ArrowDownToLine, ArrowRight, Box, Check, ChevronDown, Download, Expand, Layers3, LoaderCircle, MoveUpRight, RotateCcw, Ruler, X } from 'lucide-react'
-import { SolidView } from './SolidView'
 import { Panel } from './Panel'
+import { HomeIntro, MethodSections } from './Editorial'
+import { GUIDE } from './seo'
 import type { Design, Parameters, Solid, Preset, FaceTransform } from './types'
 import { COLORS } from './types'
 import './style.css'
+import './editorial.css'
+
+const SolidView = lazy(() => import('./SolidView').then(module => ({ default: module.SolidView })))
 
 const defaults: Parameters = { solid_id: 'rhombicuboctahedron', edge_length_mm: 120, thickness_mm: 6, shrinkage_percent: 0, page_format: 'letter', angle_precision: 2, preset_id:null, apex_offset_mm:20, face_transforms:{} }
 const polygonName: Record<number, string> = { 3: 'Triangle', 4: 'Square', 5: 'Pentagon', 6: 'Hexagon', 8: 'Octagon', 10: 'Decagon' }
@@ -29,8 +33,8 @@ async function responseError(response: Response) {
   return `Could not complete the request (${response.status}).`
 }
 
-function App() {
-  const [parameters, setParameters] = useState<Parameters>(readParameters)
+export function App() {
+  const [parameters, setParameters] = useState<Parameters>(defaults)
   const [catalog, setCatalog] = useState<Solid[]>([])
   const [presets,setPresets]=useState<Preset[]>([])
   const [selectedFaceId,setSelectedFaceId]=useState<string|null>(null)
@@ -48,6 +52,7 @@ function App() {
   const help = useRef<HTMLDialogElement>(null)
   const faceEditor=useRef<HTMLDetailsElement>(null)
   const loadInput=useRef<HTMLInputElement>(null)
+  useEffect(() => { setParameters(readParameters()) }, [])
   useEffect(() => {
     const controller = new AbortController()
     fetch('/api/solids', { signal: controller.signal }).then(async r => {
@@ -150,17 +155,17 @@ function App() {
   const transformSupported=catalog.find(s=>s.id===parameters.solid_id)?.transform_supported
   const parentOptions=design?.base_faces ?? []
   return <>
+    <a className="skip-link" href="#studio">Skip to the designer</a>
     <header className="masthead">
       <a href="/" className="wordmark" aria-label="Solids home"><svg viewBox="0 0 32 34" aria-hidden="true"><path d="M16 2 30 10 30 25 16 33 2 25 2 10Z M2 10 16 18 30 10 M16 18V33 M16 2V18 M2 25 16 18 30 25" /></svg>solids<span className="wordmark-dot">.</span></a>
-      <span className="masthead-note">A TOOL FOR SLOW MAKING</span>
+      <nav className="site-nav" aria-label="Main navigation"><a href="#studio">Design</a><a href="#method">Method</a><a href="#faq">FAQ</a></nav>
       <button className="text-button" onClick={() => setHelpOpen(true)}>The cutting guide <MoveUpRight size={14}/></button>
     </header>
     <main>
-      <section className="intro">
-        <div><div className="eyebrow"><span className="status-dot"/> THE CERAMIC TEMPLATE STUDIO</div><h1>A solid start<span>.</span></h1><p>Pick a form. Dial in your clay. Make every edge meet.</p></div>
-        <div className="intro-note"><Ruler size={18}/><span>Made for real dimensions.<br/><strong>And a little patience.</strong></span></div>
-      </section>
-      <div className="workbench">
+      <HomeIntro/>
+      <noscript><p className="script-note">The interactive designer needs JavaScript. You can read the <a href={GUIDE}>complete slab-building guide</a> without it.</p></noscript>
+      <h2 className="sr-only" id="designer-title">Design printable clay slab panels</h2>
+      <div className="workbench" id="studio" tabIndex={-1} aria-labelledby="designer-title">
         <aside className="settings" aria-label="Template settings">
           <div className="section-label"><span>01 / THE FORM</span><Box size={15}/></div>
           <label className="field-label" htmlFor="solid">Choose your solid</label>
@@ -207,7 +212,7 @@ function App() {
           <div className="preview-toolbar"><div className="view-tabs" role="tablist" aria-label="Preview mode"><button role="tab" aria-selected={view === 'solid'} className={view === 'solid' ? 'active' : ''} onClick={() => setView('solid')}><Box size={14}/> 3D solid</button><button role="tab" aria-selected={view === 'panels'} className={view === 'panels' ? 'active' : ''} onClick={() => setView('panels')}><Layers3 size={14}/> Flat panels</button></div><button className="icon-button" title="Reset view" aria-label="Reset view" onClick={() => { setResetKey(n => n + 1); setSelected(null); setSelectedEdge(null) }}><RotateCcw size={15}/></button></div>
           <div className="viewport">
             <div className="viewport-tag">{view === 'solid' ? 'ASSEMBLED FORM' : `TEMPLATE ${panel?.id ?? 'A'} / ${exteriorView ? 'EXTERIOR' : 'INTERIOR'} FACE UP`}</div>
-            {design && view === 'solid' && <SolidView design={design} selected={selected} selectedFaceId={selectedFaceId} resetKey={resetKey} onFace={fi => { setSelected(design.templates.find(t => t.face_ids.includes(fi))?.id ?? null); setSelectedEdge(null);setSelectedFaceId(design.face_records[fi].source_face_id);if(faceEditor.current) faceEditor.current.open=true }} onEdge={ei => { setSelectedEdge(ei); setSelected(null) }}/ >}
+            {design && view === 'solid' && <Suspense fallback={<div className="initial-loading">Loading the 3D preview…</div>}><SolidView design={design} selected={selected} selectedFaceId={selectedFaceId} resetKey={resetKey} onFace={fi => { setSelected(design.templates.find(t => t.face_ids.includes(fi))?.id ?? null); setSelectedEdge(null);setSelectedFaceId(design.face_records[fi].source_face_id);if(faceEditor.current) faceEditor.current.open=true }} onEdge={ei => { setSelectedEdge(ei); setSelected(null) }}/></Suspense>}
             {design && view === 'panels' && panel && <div className="flat-view"><Panel template={panel} large exterior={exteriorView}/><div className="panel-switcher">{design.templates.map(t => <button key={t.id} className={panel.id === t.id ? 'active' : ''} onClick={() => setSelected(t.id)}>{t.id}</button>)}<button className="face-view-toggle" onClick={()=>setExteriorView(v=>!v)}>{exteriorView ? 'View interior' : 'View exterior'}</button></div></div>}
             {!design && <div className="initial-loading"><LoaderCircle className="spin" size={25}/><span>Finding the right angles…</span></div>}
             {loading && design && <div className="updating"><LoaderCircle size={12} className="spin"/> Updating</div>}
@@ -227,13 +232,14 @@ function App() {
         <div className="library-heading"><div><div className="eyebrow">FROM FORM TO FLAT</div><h2>Your panels, ready to make<span>.</span></h2></div><span>{design.templates.length} templates <span className="muted">/</span> {design.total_faces} pieces in clay</span></div>
         <div className="template-grid">{design.templates.map(t => <article className={`template-card ${selected === t.id ? 'selected' : ''}`} key={t.id}>
           <div className="card-top"><span className="template-id">{t.id}</span><span className="quantity">MAKE {t.quantity}</span></div>
-          <button className="panel-select" aria-label={`Inspect template ${t.id}`} onClick={() => { setSelected(t.id); setSelectedEdge(null); setView('panels') }}><Panel template={t}/><span className="inspect-label"><Expand size={12}/> Inspect panel</span></button>
+          <button className="panel-select" onClick={() => { setSelected(t.id); setSelectedEdge(null); setView('panels') }}><span className="panel-art" aria-hidden="true"><Panel template={t}/></span><span className="inspect-label"><Expand size={12}/> Inspect template {t.id}</span></button>
           <div className="card-bottom"><div><h3>{polygonName[t.sides] ?? `${t.sides}-sided panel`}</h3><p>{design.phase2 ? `${t.edges.map(e=>e.length_mm.toFixed(2)).join(' · ')} mm reference edges` : `${design.cut_edge_mm.toFixed(2)} mm per exterior edge`}</p></div><button className="svg-button" disabled={!valid || exporting} onClick={() => download('svg', t.id)} aria-label={`Download template ${t.id} as SVG`} title="Download actual-size SVG">SVG <Download size={12}/></button></div>
           <div className="orientation-label">{design.phase2 ? 'INTERIOR VIEW / EXTENDED BLANK' : 'INTERIOR UP / EXTERIOR DOWN'} <span>{design.phase2 ? '· IN: interior up / OUT: exterior up' : '· Cut, then bevel from above'}</span></div>
         </article>)}</div>
       </section>}
       <section className="making-note"><div className="note-number">90<span>°</span></div><div><h3>{design?.phase2 ? 'Follow the cut side.' : 'Interior up. Exterior down.'}</h3><p>{design?.phase2 ? 'IN edges: interior face up. OUT edges: exterior face up. Cut the extended blank first, then follow each edge’s instruction. Reflex joints trim the exterior extension back to the reference outline. Test a convex/reflex scrap joint before making the shell.' : 'Keep the exterior face down throughout cutting and beveling. Cut the full outline, then remove upper waste from the interior face, preserving the exterior edge underneath. Settings are from the slab plane: 90° is perpendicular, 0° is parallel.'}</p><BevelerNote/></div><button className="text-button" onClick={() => setHelpOpen(true)}>See the cutting guide <MoveUpRight size={14}/></button></section>
-      <footer><span>solids. <span className="muted">A little geometry for your clay practice.</span></span><span>Measure twice. Make slowly.</span></footer>
+      <MethodSections/>
+      <footer><span>solids. <span className="muted">A little geometry for your clay practice.</span></span><a href={GUIDE}>Slab-building guide</a><span>Measure twice. Make slowly.</span></footer>
     </main>
     <dialog ref={help} onCancel={() => setHelpOpen(false)} onClick={e => { if (e.target === help.current) setHelpOpen(false) }} aria-labelledby="guide-title"><div className="dialog-top"><span className="eyebrow">AT THE WORKBENCH</span><button className="icon-button" aria-label="Close cutting guide" onClick={() => setHelpOpen(false)}><X size={20}/></button></div><h2 id="guide-title">{design?.phase2 ? <>IN or OUT?<br/><em>Keep the reference.</em></> : <>Interior face up.<br/><em>Exterior face down.</em></>}</h2>
       {design?.phase2 && <div className="phase2-guide"><p><strong>IN = interior face up. OUT = exterior face up.</strong> Mixed panels need cuts from both sides. Both settings are angles from the slab plane, with 90° normal to it.</p><p>Trace the solid <strong>extended blank</strong>, with the interior up. Keep the template ID and transfer edge IDs before turning the clay over. For OUT edges, remove upper exterior waste back to the <strong>dash-dot exterior reference</strong>. The dashed polygon is the final interior surface.</p><svg viewBox="0 0 420 135" className="section-diagram" role="img" aria-label="Exterior-up cut for reflex joint: upper exterior waste is removed from the extended blank, with the enlarged interior face underneath."><path d="M100 35H350V95H65Z" fill="#ddd7c7" stroke="#535d4b"/><path d="M65 35H100L65 95Z" fill="#d99b78" stroke="#a75d3b" strokeDasharray="4 4"/><text x="120" y="20">OUT: EXTERIOR FACE UP</text><text x="110" y="117">INTERIOR DOWN / extended edge</text><text x="0" y="52">upper waste</text></svg><p><strong>Calibration first:</strong> at 6 mm working thickness, a convex 120° joint and a reflex 240° joint both use a 60° tool setting. The former insets the interior edge 3.4641 mm; the latter needs a 3.4641 mm outward extension. Dry-fit both in scrap before committing a full set.</p><p>Solid outline = blank. Dash-dot = exterior reference. Dashed = interior surface. Dimensions on the PDF refer to the reference edges, not the expanded blank. Finite-thickness intersections block export.</p></div>}
@@ -246,4 +252,9 @@ function App() {
   </>
 }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><App/></StrictMode>)
+if (typeof document !== 'undefined') {
+  const root=document.getElementById('root')!
+  const app=<StrictMode><App/></StrictMode>
+  if (root.hasChildNodes()) hydrateRoot(root,app)
+  else createRoot(root).render(app)
+}

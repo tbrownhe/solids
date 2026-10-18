@@ -260,6 +260,10 @@ Run the same command with `npm run test:phase2` to cover transformed recipes,
 3D face selection, per-face/equivalent-face editing, front/back previews,
 versioned and legacy project loading, coupons and fabrication rejection.
 
+Run it with `npm run test:seo` to check raw response metadata, no-JavaScript
+content, the standalone guide, social PNG dimensions, JSON-LD, sitemap, robots,
+canonical routing, keyboard anchor focus, saved preferences and hydration.
+
 The browser package is pinned to 1.64.1; update the image tag with it. On a host
 with Chromium system dependencies, `npx playwright install chromium` then
 `npm run test:browser` also works. QA covers parameters, previews, persistence,
@@ -267,24 +271,101 @@ edge details, downloads, errors, the guide, mobile overflow, JS errors, and
 absence of external runtime requests. Screenshots and test exports are saved
 under ignored `artifacts/browser/`.
 
-## Later deployment to silicide
+## Production on silicide
 
-Public hostname: **solids.tobiasbrownheft.xyz**, without login. No server or DNS
-changes have been made. `compose.production.yaml` uses `traefik-public`, existing
+Public hostname: **https://solids.tobiasbrownheft.xyz**, without login. The first
+release was deployed from commit `217db66` on 2026-10-18 at `/srv/solids`.
+`compose.production.yaml` uses `traefik-public`, existing
 opt-in discovery labels, the `le` certificate resolver, shared rate-limit/security
 middleware, and an explicit HTTP redirect. It publishes no host port.
 
-Before deployment, create the proxied Cloudflare DNS record and arrange dynamic
-IP updates for its zone. Existing infra DDNS is zone-specific; a different zone
-may need separate setup. Preserve its existing allowlist. From a future checkout
-at `/srv/solids`:
+Keep Cloudflare proxying enabled (orange cloud), with SSL/TLS set to Full
+(strict). Traefik obtains and renews the Let's Encrypt origin certificate.
+The existing origin firewall requires requests to pass through Cloudflare.
+
+The `.xyz` apex is a proxied CNAME to `parsetrail.com`, whose A record the
+existing DDNS service updates. `solids`, `turing` and `www` are proxied CNAMEs
+to `tobiasbrownheft.xyz`. Both zones are in the same Cloudflare account.
+Cloudflare's CNAME flattening permits the apex alias alongside the zone's
+SOA, NS and TXT records. All these sites therefore follow the existing DDNS
+updates without another service or token. New subdomains on this server can
+follow the same pattern; Traefik still needs a router for each application.
+
+For updates after committing and pushing the desired version:
 
 ```bash
+ssh tbrownhe@silicide
+cd /srv/solids
+git pull --ff-only
 docker compose -f compose.production.yaml config --quiet
-docker compose -f compose.production.yaml up -d --build
+docker build --network=host -t solids-studio .
+docker compose -f compose.production.yaml up -d --no-build --wait
+docker compose -f compose.production.yaml ps
+curl --fail https://solids.tobiasbrownheft.xyz/api/health
 ```
 
-The review found existing infra USB backup failures due to insufficient
-destination space. Fixing that and extending the ParseTrail-specific backup
-boundary are separate infra work. This app currently has no irreplaceable
-server-side user data; browser preferences live in local storage.
+The first build stalled during npm installation with default BuildKit networking;
+host networking completed successfully. The explicit build command above uses
+that workaround only during image creation. The running service joins only the
+shared Traefik network. Do not start the local `compose.yaml` on the server.
+
+Inspect application logs with
+`docker compose -f compose.production.yaml logs --tail=100 studio`.
+The app has no persistent server-side user data; project files and browser
+preferences remain on the user's device.
+
+## Search and sharing
+
+`npm run build` creates the Vite bundle and prerenders the homepage using React
+at build time. The client hydrates the same initial markup, then restores saved
+parameters. The 3D viewer loads separately. FastAPI serves the completed HTML;
+there is no Node rendering process in production. The guide at
+`/guide/slab-polyhedra/` is fully static and needs no JavaScript. Its short URL
+redirects permanently to the canonical trailing-slash URL; unknown pages stay 404.
+
+`frontend/src/seo.ts` owns titles, descriptions, canonical URLs, Open Graph,
+Twitter cards and JSON-LD. `Editorial.tsx` contains the homepage prose and guide.
+The build emits robots.txt and a sitemap containing only the homepage and guide.
+Cloudflare can prepend its managed robots policy; preserve the zone's existing
+crawler controls. HTML and crawler files revalidate; Vite's fingerprinted assets
+are cached for one year. Social images and icons have a one-hour browser cache.
+
+The social card is an original illustration from registry geometry, not a photo
+of a completed ceramic piece. The public PNG is 1200 × 630; its vector source
+is kept separately. To regenerate it after changing the artwork or branding:
+
+```bash
+PYTHONPATH=backend uv run python scripts/generate-social.py
+docker run --rm --init --shm-size=1g --user "$(id -u):$(id -g)" \
+  -v "$PWD:/work" -w /work/frontend \
+  mcr.microsoft.com/playwright:v1.64.1-noble node scripts/render-social.mjs
+```
+
+Commit the generated public PNG/SVG and icon files; deployment does not need a
+browser to build the app. Replace the illustration with authentic ceramic photos
+when available, keeping image URLs/metadata and page copy independently editable.
+Add descriptive alt text and dimensions to future gallery images, lazy-load
+below-fold images, and include a real example's dimensions, joins and outcomes.
+There is currently no gallery or automatically generated per-solid content.
+
+Owner actions after deployment:
+
+1. Open [Google Search Console](https://search.google.com/search-console/).
+   An already verified `tobiasbrownheft.xyz` Domain property covers this subdomain.
+   For separate reporting, add the URL-prefix property
+   `https://solids.tobiasbrownheft.xyz/`. Retain the existing DNS verification TXT.
+2. Submit `https://solids.tobiasbrownheft.xyz/sitemap.xml`. Inspect the homepage
+   and `/guide/slab-polyhedra/` with URL Inspection, run the live test and request
+   indexing. Monitor indexing and search queries; submission does not guarantee
+   inclusion or rankings.
+3. Add the site in [Bing Webmaster Tools](https://www.bing.com/webmasters/),
+   importing the verified Search Console property if desired, and submit the
+   same sitemap. No anonymous sitemap-ping endpoint is used.
+4. Recheck the public pages with the
+   [Schema Markup Validator](https://validator.schema.org/) when metadata changes.
+   Generic WebApplication/Article markup describes real content; it has no
+   fabricated reviews, ratings or promised FAQ rich results.
+
+Reference instructions: [Search Console property coverage](https://support.google.com/webmasters/answer/34592),
+[URL Inspection](https://support.google.com/webmasters/answer/9012289), and
+[Bing site verification/import](https://www.bing.com/webmasters/help/add-and-verify-site-12184f8b).
