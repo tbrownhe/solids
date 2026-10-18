@@ -1,0 +1,22 @@
+[project]
+name = "solids-studio"
+version = "0.1.0"
+description = "Dimensionally accurate ceramic slab templates for polyhedra"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "numpy>=2,<3",
+  "scipy>=1.14,<2",
+  "reportlab>=4.2,<5",
+  "uvicorn>=0.34,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "pymupdf>=1.25,<2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false

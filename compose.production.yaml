@@ -1,0 +1,28 @@
+# Optional later deployment on silicide: docker compose -f compose.production.yaml up -d --build
+# DNS must exist in Cloudflare and be proxied before using the public hostname.
+services:
+  studio:
+    extends:
+      file: compose.yaml
+      service: studio
+    ports: !reset []
+    networks:
+      - traefik-public
+    labels:
+      - traefik.enable=true
+      - traefik.constraint-label=traefik-public
+      - traefik.docker.network=traefik-public
+      - traefik.http.routers.solids.rule=Host(`solids.tobiasbrownheft.xyz`)
+      - traefik.http.routers.solids.entrypoints=https
+      - traefik.http.routers.solids.tls=true
+      - traefik.http.routers.solids.tls.certresolver=le
+      - traefik.http.routers.solids.middlewares=cloudflare-rate-limit@docker
+      - traefik.http.services.solids.loadbalancer.server.port=8000
+      - traefik.http.routers.solids-http.rule=Host(`solids.tobiasbrownheft.xyz`)
+      - traefik.http.routers.solids-http.entrypoints=http
+      - traefik.http.routers.solids-http.middlewares=https-redirect@docker
+      - traefik.http.routers.solids-http.service=solids
+
+networks:
+  traefik-public:
+    external: true
