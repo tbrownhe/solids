@@ -322,6 +322,9 @@ parameters. The 3D viewer loads separately. FastAPI serves the completed HTML;
 there is no Node rendering process in production. The guide at
 `/guide/slab-polyhedra/` is fully static and needs no JavaScript. Its short URL
 redirects permanently to the canonical trailing-slash URL; unknown pages stay 404.
+Cloudflare may append its configured analytics beacon to the public HTML; the
+guide's content and navigation do not depend on it. The SEO test distinguishes
+that edge injection from application JavaScript.
 
 `frontend/src/seo.ts` owns titles, descriptions, canonical URLs, Open Graph,
 Twitter cards and JSON-LD. `Editorial.tsx` contains the homepage prose and guide.

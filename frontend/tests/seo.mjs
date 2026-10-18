@@ -46,7 +46,10 @@ try {
       await expect(page.locator('noscript')).toBeVisible()
     } else {
       assert.equal(schema['@type'],'Article')
-      assert.equal(await page.locator('script[type=module]').count(),0)
+      // The guide has no app JavaScript. Cloudflare may append its existing
+      // analytics beacon at the edge, independently of the static origin page.
+      const modules=await page.locator('script[type=module]').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('src')))
+      assert(modules.every(src=>src && new URL(src,baseURL).hostname==='static.cloudflareinsights.com'))
       await expect(page.getByRole('heading',{name:'Keep the reference edge, and follow the cut side'})).toBeVisible()
       await expect(page.locator('#cutting')).toContainText('exterior face down throughout cutting and beveling')
       await expect(page.locator('#cutting')).toContainText('A panel with IN and OUT edges needs bevels from both sides')
